@@ -1,5 +1,6 @@
 const TILE_SIZE = 256;
 const ZOOM_ANIMATION_MS = 260;
+const WEB_MERCATOR_MAX_LAT = 85.05112878;
 const STORAGE = {
   completed: "new-laurentia.completed.v1",
   customPins: "new-laurentia.custom-pins.v1",
@@ -9,6 +10,7 @@ const STORAGE = {
   pinLocations: "new-laurentia.pin-locations.v1",
   zoomLocked: "new-laurentia.zoom-locked.v1",
   view: "new-laurentia.view.v1",
+  savedFilters: "new-laurentia.saved-filters.v1",
 };
 
 const MAX_AGE_ALIASES = {
@@ -49,6 +51,10 @@ const state = {
   relocationDraft: null,
   relocationDrag: null,
   query: "",
+  animalFilters: {
+    stars: new Set(),
+    fitnessDirection: "above",
+  },
   selected: null,
   addingPin: false,
   drag: null,
@@ -82,6 +88,7 @@ async function init() {
     restoreView();
     renderCategories();
     bindEvents();
+    updateSavedFilterControls();
     render();
     updateProgress();
     document.querySelector("#app").classList.remove("is-loading");
@@ -99,6 +106,9 @@ function cacheElements() {
     "zoom-out", "zoom-level", "zoom-lock", "reset-view", "add-pin", "pin-card", "empty-state",
     "coordinates", "map-hint", "loading", "custom-pin-dialog", "custom-pin-form",
     "custom-pin-title", "custom-pin-notes", "custom-pin-lon", "custom-pin-lat",
+    "animal-filter-count", "fitness-filter", "count-filter", "count-comparison",
+    "age-filter", "age-comparison", "clear-animal-filters",
+    "save-filters", "load-filters", "filter-save-status",
   ]) {
     els[toCamel(id)] = document.getElementById(id);
   }
@@ -158,7 +168,65 @@ function getNeedZoneSchedule(groupTitle, type) {
   const windows = sourceName ? state.needZoneSchedules[sourceName]?.[type] : null;
   if (!windows) return "Schedule unavailable";
   if (!windows.length) return "No scheduled visit";
-  return windows.map(([start, end]) => `${start}–${end}`).join(", ");
+  return windows.map(([start, end]) => `${start} - ${end}`).join("\n");
+}
+
+function getPopulation(pin) {
+  return state.populations[pin.id] || [];
+}
+
+function getTrophyRating(member) {
+  return Number(member.trophy ?? member.trophyRating ?? member.rating ?? member.stars) || 0;
+}
+
+function getAnimalTrophyBadge(pin) {
+  const population = getPopulation(pin);
+  if (population.some((member) => getTrophyRating(member) >= 5)) return { kind: "gold", label: "5-star trophy animal" };
+  if (population.some((member) => getTrophyRating(member) >= 4)) return { kind: "silver", label: "4-star trophy animal" };
+  if (population.some((member) => parseFloat(member.fitness) >= 90)) return { kind: "white", label: "90% or higher fitness animal" };
+  return null;
+}
+
+function compareNumber(value, target, operator) {
+  if (operator === "lt") return value < target;
+  if (operator === "lte") return value <= target;
+  if (operator === "eq") return value === target;
+  if (operator === "gte") return value >= target;
+  return value > target;
+}
+
+function readFilterNumber(element) {
+  if (!element || element.value === "") return null;
+  const value = Number(element.value);
+  return Number.isFinite(value) ? value : null;
+}
+
+function animalMatchesFilters(pin) {
+  const population = getPopulation(pin);
+  const selectedStars = state.animalFilters.stars;
+  if (selectedStars.size && !population.some((member) => selectedStars.has(getTrophyRating(member)))) return false;
+
+  const fitness = readFilterNumber(els.fitnessFilter);
+  if (fitness !== null) {
+    const above = state.animalFilters.fitnessDirection === "above";
+    if (!population.some((member) => above ? Number(member.fitness) > fitness : Number(member.fitness) < fitness)) return false;
+  }
+
+  const count = readFilterNumber(els.countFilter);
+  if (count !== null && !compareNumber(population.length, count, els.countComparison.value)) return false;
+
+  const age = readFilterNumber(els.ageFilter);
+  if (age !== null && !population.some((member) => compareNumber(Number(member.age), age, els.ageComparison.value))) return false;
+  return true;
+}
+
+function updateAnimalFilterCount() {
+  const count = state.animalFilters.stars.size
+    + Number(readFilterNumber(els.fitnessFilter) !== null)
+    + Number(readFilterNumber(els.countFilter) !== null)
+    + Number(readFilterNumber(els.ageFilter) !== null);
+  els.animalFilterCount.textContent = String(count);
+  els.animalFilterCount.hidden = count === 0;
 }
 
 function getPinLocation(pin) {
@@ -171,8 +239,8 @@ function restoreView() {
   const saved = readStorage(STORAGE.view, null);
   const config = state.data.map.config;
   if (saved && Array.isArray(saved.center) && Number.isFinite(saved.zoom)) {
-    state.center = saved.center;
     state.zoom = clamp(saved.zoom, config.minZoom, config.maxZoom);
+    state.center = clampCenter(saved.center, state.zoom);
   } else {
     state.center = config.center;
     state.zoom = 3;
@@ -227,8 +295,44 @@ function bindEvents() {
     state.query = els.search.value.trim().toLowerCase();
     renderMarkers();
   });
+  for (const button of document.querySelectorAll(".star-filter-options button")) {
+    button.addEventListener("click", () => {
+      const rating = Number(button.dataset.star);
+      if (state.animalFilters.stars.has(rating)) state.animalFilters.stars.delete(rating);
+      else state.animalFilters.stars.add(rating);
+      button.setAttribute("aria-pressed", String(state.animalFilters.stars.has(rating)));
+      updateAnimalFilterCount();
+      renderMarkers();
+    });
+  }
+  for (const button of document.querySelectorAll(".fitness-direction button")) {
+    button.addEventListener("click", () => {
+      state.animalFilters.fitnessDirection = button.dataset.direction;
+      for (const option of document.querySelectorAll(".fitness-direction button")) {
+        option.setAttribute("aria-pressed", String(option === button));
+      }
+      renderMarkers();
+    });
+  }
+  for (const input of [els.fitnessFilter, els.countFilter, els.ageFilter]) {
+    input.addEventListener("input", () => {
+      updateAnimalFilterCount();
+      renderMarkers();
+    });
+    input.addEventListener("change", () => {
+      if (input.value !== "") input.value = String(clamp(Number(input.value), Number(input.min), Number(input.max)));
+      updateAnimalFilterCount();
+      renderMarkers();
+    });
+  }
+  for (const select of [els.countComparison, els.ageComparison]) {
+    select.addEventListener("change", renderMarkers);
+  }
+  els.clearAnimalFilters.addEventListener("click", clearAnimalFilters);
   els.showAll.addEventListener("click", () => setAllGroups(true));
   els.hideAll.addEventListener("click", () => setAllGroups(false));
+  els.saveFilters.addEventListener("click", saveFilters);
+  els.loadFilters.addEventListener("click", loadFilters);
   els.hideCompleted.addEventListener("click", () => {
     state.hideCompleted = !state.hideCompleted;
     els.hideCompleted.setAttribute("aria-pressed", String(state.hideCompleted));
@@ -256,7 +360,10 @@ function bindEvents() {
   els.map.addEventListener("mousemove", updateCoordinateReadout);
   els.map.addEventListener("keydown", onMapKeydown);
   window.addEventListener("resize", () => {
-    if (!state.zoomAnimating) render();
+    if (!state.zoomAnimating) {
+      state.center = clampCenter(state.center);
+      render();
+    }
   });
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -274,6 +381,112 @@ function bindEvents() {
   for (const button of els.customPinDialog.querySelectorAll(".cancel-dialog")) {
     button.addEventListener("click", () => els.customPinDialog.close());
   }
+}
+
+function clearAnimalFilters() {
+  state.animalFilters.stars.clear();
+  state.animalFilters.fitnessDirection = "above";
+  for (const button of document.querySelectorAll(".star-filter-options button")) button.setAttribute("aria-pressed", "false");
+  for (const button of document.querySelectorAll(".fitness-direction button")) {
+    button.setAttribute("aria-pressed", String(button.dataset.direction === "above"));
+  }
+  els.fitnessFilter.value = "";
+  els.countFilter.value = "";
+  els.ageFilter.value = "";
+  els.countComparison.value = "lt";
+  els.ageComparison.value = "lt";
+  updateAnimalFilterCount();
+  renderMarkers();
+}
+
+function saveFilters() {
+  const snapshot = {
+    version: 1,
+    visibleGroups: [...state.visibleGroups],
+    query: state.query,
+    hideCompleted: state.hideCompleted,
+    showNeedZones: state.showNeedZones,
+    animalFilters: {
+      stars: [...state.animalFilters.stars],
+      fitnessDirection: state.animalFilters.fitnessDirection,
+      fitness: els.fitnessFilter.value,
+      countComparison: els.countComparison.value,
+      count: els.countFilter.value,
+      ageComparison: els.ageComparison.value,
+      age: els.ageFilter.value,
+    },
+  };
+  saveStorage(STORAGE.savedFilters, snapshot);
+  updateSavedFilterControls("Filters saved");
+}
+
+function loadFilters() {
+  const snapshot = readStorage(STORAGE.savedFilters, null);
+  if (!snapshot || !Array.isArray(snapshot.visibleGroups)) {
+    updateSavedFilterControls("No saved filters found");
+    return;
+  }
+
+  const availableGroups = new Set(
+    state.data.groups.filter((group) => group.parentGroup && group.count).map((group) => group.id),
+  );
+  state.visibleGroups = new Set(
+    snapshot.visibleGroups.map(Number).filter((id) => availableGroups.has(id)),
+  );
+  for (const checkbox of els.categories.querySelectorAll('input[type="checkbox"]')) {
+    checkbox.checked = state.visibleGroups.has(Number(checkbox.value));
+  }
+
+  state.query = typeof snapshot.query === "string" ? snapshot.query.trim().toLowerCase() : "";
+  els.search.value = state.query;
+  state.hideCompleted = Boolean(snapshot.hideCompleted);
+  state.showNeedZones = Boolean(snapshot.showNeedZones);
+  els.hideCompleted.setAttribute("aria-pressed", String(state.hideCompleted));
+  els.showNeedZones.setAttribute("aria-pressed", String(state.showNeedZones));
+
+  const animalFilters = snapshot.animalFilters || {};
+  state.animalFilters.stars = new Set(
+    Array.isArray(animalFilters.stars)
+      ? animalFilters.stars.map(Number).filter((rating) => rating >= 1 && rating <= 5)
+      : [],
+  );
+  state.animalFilters.fitnessDirection = animalFilters.fitnessDirection === "below" ? "below" : "above";
+  els.fitnessFilter.value = normalizeSavedFilterValue(animalFilters.fitness, 0, 99);
+  els.countFilter.value = normalizeSavedFilterValue(animalFilters.count, 0, 20);
+  els.ageFilter.value = normalizeSavedFilterValue(animalFilters.age, 0, 30);
+  els.countComparison.value = normalizeSavedComparison(animalFilters.countComparison);
+  els.ageComparison.value = normalizeSavedComparison(animalFilters.ageComparison);
+
+  for (const button of document.querySelectorAll(".star-filter-options button")) {
+    button.setAttribute("aria-pressed", String(state.animalFilters.stars.has(Number(button.dataset.star))));
+  }
+  for (const button of document.querySelectorAll(".fitness-direction button")) {
+    button.setAttribute("aria-pressed", String(button.dataset.direction === state.animalFilters.fitnessDirection));
+  }
+  updateAnimalFilterCount();
+  document.querySelector(".animal-filters").open = Boolean(
+    state.animalFilters.stars.size || els.fitnessFilter.value || els.countFilter.value || els.ageFilter.value,
+  );
+  closeCard();
+  renderMarkers();
+  updateSavedFilterControls("Filters loaded");
+}
+
+function normalizeSavedFilterValue(value, min, max) {
+  if (value === "" || value === null || value === undefined) return "";
+  const number = Number(value);
+  return Number.isFinite(number) ? String(clamp(number, min, max)) : "";
+}
+
+function normalizeSavedComparison(value) {
+  return ["lt", "lte", "eq", "gte", "gt"].includes(value) ? value : "lt";
+}
+
+function updateSavedFilterControls(message = "") {
+  const hasSavedFilters = Boolean(readStorage(STORAGE.savedFilters, null));
+  els.loadFilters.disabled = !hasSavedFilters;
+  els.loadFilters.title = hasSavedFilters ? "Restore the saved filter configuration" : "No saved filters available";
+  els.filterSaveStatus.textContent = message;
 }
 
 function render() {
@@ -335,6 +548,8 @@ function renderMarkers({ refreshCard = true } = {}) {
     if (!state.visibleGroups.has(pin.group)) continue;
     if (state.hideCompleted && isInfrastructurePin(pin) && state.completed.has(pin.id)) continue;
     if (query && !pin._search.includes(query)) continue;
+    if (isAnimalPin(pin) && state.expandedAnimalId && pin.id !== state.expandedAnimalId) continue;
+    if (isAnimalPin(pin) && !animalMatchesFilters(pin)) continue;
     const belongsToExpandedAnimal = pin.parentPin === state.expandedAnimalId;
     if (pin.parentPin && !state.showNeedZones && !belongsToExpandedAnimal && !query) continue;
     const location = getPinLocation(pin);
@@ -366,11 +581,13 @@ function createMarker(pin, x, y) {
   const icon = iconById.get(pin.iconOverride || group?.icon);
   const color = pin.colorOverride || parentColorByGroup.get(pin.group) || "#dedede";
   const animal = isAnimalPin(pin);
+  const population = animal ? getPopulation(pin) : [];
+  const trophyBadge = animal ? getAnimalTrophyBadge(pin) : null;
   const description = animal ? getAnimalDescription(pin) : "";
   const tooltip = animal
     ? [group?.title || pin.title, description].filter(Boolean).join("\n")
     : pin.parentPin
-      ? `${group?.title || "Animal"}\n${getNeedZoneType(pin)} · ${getNeedZoneSchedule(group?.title, getNeedZoneType(pin))}`
+      ? `${group?.title || "Animal"}\n${getNeedZoneType(pin)}\n${getNeedZoneSchedule(group?.title, getNeedZoneType(pin))}`
       : `${pin.title} — ${group?.title || "Location"}`;
   const button = document.createElement("button");
   button.type = "button";
@@ -384,10 +601,22 @@ function createMarker(pin, x, y) {
   ].filter(Boolean).join(" ");
   button.style.left = `${x}px`;
   button.style.top = `${y}px`;
-  button.style.setProperty("--marker-color", color);
+  button.style.setProperty("--marker-color", animal ? (population.length ? "#d8792e" : "#7a4a2b") : color);
   button.title = tooltip;
-  button.setAttribute("aria-label", tooltip.replace("\n", ". "));
+  button.setAttribute("aria-label", tooltip.replaceAll("\n", ". "));
   if (icon) button.innerHTML = `<img src="assets/icons/${encodeURIComponent(icon.filename)}" alt="">`;
+  if (trophyBadge) {
+    const badge = document.createElement("span");
+    badge.className = `trophy-badge is-${trophyBadge.kind}`;
+    badge.title = trophyBadge.label;
+    badge.setAttribute("aria-label", trophyBadge.label);
+    badge.innerHTML = `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M6 2h12v5a6 6 0 0 1-5 5.92V18h4v4H7v-4h4v-5.08A6 6 0 0 1 6 7V2Z"/>
+        <path d="M6 5H3v4a5 5 0 0 0 5 5h2v-2H8a3 3 0 0 1-3-3V7h1V5Zm12 0h3v4a5 5 0 0 1-5 5h-2v-2h2a3 3 0 0 0 3-3V7h-1V5Z"/>
+      </svg>`;
+    button.append(badge);
+  }
   if (animal || pin.parentPin) {
     const tip = document.createElement("span");
     tip.className = "marker-tooltip";
@@ -406,11 +635,12 @@ function createMarker(pin, x, y) {
 function createCustomMarker(pin, x, y) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "marker custom";
+  button.className = `marker custom${pin.icon ? " has-icon" : ""}`;
   button.style.left = `${x}px`;
   button.style.top = `${y}px`;
   button.style.setProperty("--marker-color", pin.color);
   button.title = pin.title;
+  if (pin.icon) button.innerHTML = `<img src="assets/icons/${encodeURIComponent(pin.icon)}" alt="">`;
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     openCustomPinCard(pin);
@@ -661,7 +891,7 @@ function addPopulationMember(event, pin, group) {
   const population = state.populations[pin.id] || [];
   state.populations[pin.id] = [...population, member];
   saveStorage(STORAGE.populations, state.populations);
-  openPinCard(pin);
+  renderMarkers();
   const editor = els.pinCard.querySelector(".population-editor");
   if (editor) editor.open = true;
 }
@@ -670,7 +900,7 @@ function removePopulationMember(pin, memberId) {
   const population = state.populations[pin.id] || [];
   state.populations[pin.id] = population.filter((member) => member.id !== memberId);
   saveStorage(STORAGE.populations, state.populations);
-  openPinCard(pin);
+  renderMarkers();
 }
 
 function renderNeedZoneFrequency(zone) {
@@ -761,7 +991,7 @@ function getNeedZoneType(zone) {
 function focusNeedZone(id, animalId) {
   const zone = pinById.get(id);
   if (!zone) return;
-  state.center = [...getPinLocation(zone)];
+  state.center = clampCenter(getPinLocation(zone));
   state.expandedAnimalId = animalId;
   openPinCard(zone);
   render();
@@ -859,8 +1089,10 @@ function setZoom(next, anchor = null) {
       (centerPx.y + offsetY) * scale - offsetY,
       zoom,
     );
-    nextCenter = clampCenter([anchoredCenter.lon, anchoredCenter.lat]);
+    nextCenter = [anchoredCenter.lon, anchoredCenter.lat];
   }
+
+  nextCenter = clampCenter(nextCenter, zoom);
 
   if (!selectedAnimal) closeCard();
   animateZoomTo(zoom, nextCenter);
@@ -955,7 +1187,7 @@ function startDrag(event) {
 function moveDrag(event) {
   if (state.relocationDrag) {
     const next = clientToLonLat(event.clientX, event.clientY);
-    state.relocationDraft = clampCenter([next.lon, next.lat]);
+    state.relocationDraft = clampWorldLocation([next.lon, next.lat]);
     renderMarkers({ refreshCard: false });
     return;
   }
@@ -1016,6 +1248,7 @@ function saveCustomPin(event) {
   event.preventDefault();
   if (!els.customPinForm.reportValidity()) return;
   const color = new FormData(els.customPinForm).get("pin-color") || "#e7b648";
+  const icon = new FormData(els.customPinForm).get("pin-icon") || "woth2-tent_1x.webp";
   const pin = {
     id: `custom-${Date.now()}`,
     title: els.customPinTitle.value.trim(),
@@ -1023,6 +1256,7 @@ function saveCustomPin(event) {
     lon: Number(els.customPinLon.value),
     lat: Number(els.customPinLat.value),
     color,
+    icon,
   };
   state.customPins.push(pin);
   saveStorage(STORAGE.customPins, state.customPins);
@@ -1059,9 +1293,20 @@ function worldToLonLat(x, y, zoom) {
   return { lon, lat };
 }
 
-function clampCenter(center) {
-  const bounds = state.data.map.config.bounds;
-  return [clamp(center[0], bounds[0], bounds[2]), clamp(center[1], bounds[1], bounds[3])];
+function clampCenter(center, zoom = state.zoom) {
+  const rect = els.map.getBoundingClientRect();
+  const worldSize = TILE_SIZE * 2 ** zoom;
+  const halfWidth = Math.min(rect.width / 2, worldSize / 2);
+  const halfHeight = Math.min(rect.height / 2, worldSize / 2);
+  const point = lonLatToWorld(center[0], center[1], zoom);
+  const x = worldSize <= rect.width ? worldSize / 2 : clamp(point.x, halfWidth, worldSize - halfWidth);
+  const y = worldSize <= rect.height ? worldSize / 2 : clamp(point.y, halfHeight, worldSize - halfHeight);
+  const clamped = worldToLonLat(x, y, zoom);
+  return [clamped.lon, clamped.lat];
+}
+
+function clampWorldLocation(location) {
+  return [clamp(location[0], -180, 180), clamp(location[1], -WEB_MERCATOR_MAX_LAT, WEB_MERCATOR_MAX_LAT)];
 }
 
 function readStorage(key, fallback) {

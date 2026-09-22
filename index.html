@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#111714" />
     <title>New Laurentia — Offline Map</title>
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=20260922-4" />
   </head>
   <body>
     <div id="app" class="app is-loading">
@@ -23,6 +23,60 @@
           <kbd>⌘K</kbd>
         </div>
 
+        <details class="animal-filters">
+          <summary>
+            <span>Animal filters</span>
+            <span id="animal-filter-count" class="filter-count" hidden>0</span>
+          </summary>
+          <div class="animal-filter-fields">
+            <fieldset class="star-filter">
+              <legend>Stars</legend>
+              <div class="star-filter-options" aria-label="Trophy star ratings">
+                <button type="button" data-star="1" aria-pressed="false" title="1 star">★</button>
+                <button type="button" data-star="2" aria-pressed="false" title="2 stars">★★</button>
+                <button type="button" data-star="3" aria-pressed="false" title="3 stars">★★★</button>
+                <button type="button" data-star="4" aria-pressed="false" title="4 stars">★★★★</button>
+                <button type="button" data-star="5" aria-pressed="false" title="5 stars">★★★★★</button>
+              </div>
+            </fieldset>
+            <label class="range-filter">Fitness
+              <span>
+                <span class="fitness-direction" aria-label="Fitness comparison">
+                  <button type="button" data-direction="above" aria-pressed="true">Above</button>
+                  <button type="button" data-direction="below" aria-pressed="false">Below</button>
+                </span>
+                <input id="fitness-filter" type="number" min="0" max="99" step="1" inputmode="numeric" placeholder="0–99" aria-label="Fitness percentage" />
+                <b>%</b>
+              </span>
+            </label>
+            <label class="range-filter">Count
+              <span>
+                <select id="count-comparison" aria-label="Population count comparison">
+                  <option value="lt">&lt;</option>
+                  <option value="lte">≤</option>
+                  <option value="eq">=</option>
+                  <option value="gte">≥</option>
+                  <option value="gt">&gt;</option>
+                </select>
+                <input id="count-filter" type="number" min="0" max="20" step="1" inputmode="numeric" placeholder="0–20" aria-label="Population count" />
+              </span>
+            </label>
+            <label class="range-filter">Age
+              <span>
+                <select id="age-comparison" aria-label="Animal age comparison">
+                  <option value="lt">&lt;</option>
+                  <option value="lte">≤</option>
+                  <option value="eq">=</option>
+                  <option value="gte">≥</option>
+                  <option value="gt">&gt;</option>
+                </select>
+                <input id="age-filter" type="number" min="0" max="30" step="1" inputmode="numeric" placeholder="0–30" aria-label="Animal age" />
+              </span>
+            </label>
+            <button id="clear-animal-filters" type="button">Clear filters</button>
+          </div>
+        </details>
+
         <section class="progress-panel" aria-label="Map progress">
           <div class="progress-copy">
             <span>Infrastructure progress</span>
@@ -34,8 +88,11 @@
         <div class="filter-actions">
           <button id="show-all" type="button">Show all</button>
           <button id="hide-all" type="button">Hide all</button>
+          <button id="save-filters" type="button">Save filters</button>
+          <button id="load-filters" type="button" disabled>Load filters</button>
           <button id="hide-completed" class="toggle" type="button" aria-pressed="false">Hide completed</button>
           <button id="show-need-zones" class="toggle" type="button" aria-pressed="false">Show need zones</button>
+          <p id="filter-save-status" class="filter-save-status" aria-live="polite"></p>
         </div>
 
         <nav id="categories" class="categories" aria-label="Location categories"></nav>
@@ -98,6 +155,19 @@
         <label>Label <input id="custom-pin-title" required maxlength="80" placeholder="e.g. Great elk spot" /></label>
         <label>Notes <textarea id="custom-pin-notes" maxlength="300" placeholder="Optional notes"></textarea></label>
         <fieldset>
+          <legend>Icon</legend>
+          <div class="icon-options">
+            <label title="Tent"><input type="radio" name="pin-icon" value="woth2-tent_1x.webp" checked><span><img src="assets/icons/woth2-tent_1x.webp" alt=""></span><span class="sr-only">Tent</span></label>
+            <label title="Trophy"><input type="radio" name="pin-icon" value="woth2-trophy_1x.webp"><span><img src="assets/icons/woth2-trophy_1x.webp" alt=""></span><span class="sr-only">Trophy</span></label>
+            <label title="Star"><input type="radio" name="pin-icon" value="woth2-star_1x.webp"><span><img src="assets/icons/woth2-star_1x.webp" alt=""></span><span class="sr-only">Star</span></label>
+            <label title="Marker"><input type="radio" name="pin-icon" value="woth2-blue_marker_1x.webp"><span><img src="assets/icons/woth2-blue_marker_1x.webp" alt=""></span><span class="sr-only">Marker</span></label>
+            <label title="Animal"><input type="radio" name="pin-icon" value="woth2-paw_1x.webp"><span><img src="assets/icons/woth2-paw_1x.webp" alt=""></span><span class="sr-only">Animal</span></label>
+            <label title="Favorite"><input type="radio" name="pin-icon" value="woth2-heart_1x.webp"><span><img src="assets/icons/woth2-heart_1x.webp" alt=""></span><span class="sr-only">Favorite</span></label>
+            <label title="Crown"><input type="radio" name="pin-icon" value="woth2-crown_1x.webp"><span><img src="assets/icons/woth2-crown_1x.webp" alt=""></span><span class="sr-only">Crown</span></label>
+            <label title="Marker"><input type="radio" name="pin-icon" value="woth2-red_marker_1x.webp"><span><img src="assets/icons/woth2-red_marker_1x.webp" alt=""></span><span class="sr-only">Marker</span></label>
+          </div>
+        </fieldset>
+        <fieldset>
           <legend>Color</legend>
           <div class="color-options">
             <label><input type="radio" name="pin-color" value="#e7b648" checked><span style="--swatch:#e7b648"></span></label>
@@ -116,6 +186,6 @@
       </form>
     </dialog>
 
-    <script src="app.js" defer></script>
+    <script src="app.js?v=20260922-4" defer></script>
   </body>
 </html>
