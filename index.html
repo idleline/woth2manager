@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#111714" />
+    <title>New Laurentia — Offline Map</title>
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app is-loading">
+      <aside class="sidebar" aria-label="Map filters">
+        <header class="brand">
+          <p class="eyebrow">Way of the Hunter 2</p>
+          <h1>New Laurentia</h1>
+          <p class="offline-badge"><span></span> Offline map</p>
+        </header>
+
+        <div class="search-wrap">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z"/></svg>
+          <input id="search" type="search" placeholder="Search 3,606 locations…" autocomplete="off" />
+          <kbd>⌘K</kbd>
+        </div>
+
+        <section class="progress-panel" aria-label="Map progress">
+          <div class="progress-copy">
+            <span>Infrastructure progress</span>
+            <strong id="progress-text">0 / 0</strong>
+          </div>
+          <div class="progress-track"><span id="progress-bar"></span></div>
+        </section>
+
+        <div class="filter-actions">
+          <button id="show-all" type="button">Show all</button>
+          <button id="hide-all" type="button">Hide all</button>
+          <button id="hide-completed" class="toggle" type="button" aria-pressed="false">Hide completed</button>
+          <button id="show-need-zones" class="toggle" type="button" aria-pressed="false">Show need zones</button>
+        </div>
+
+        <nav id="categories" class="categories" aria-label="Location categories"></nav>
+
+        <footer class="sidebar-footer">
+          <p>Map imagery and location data from Shackmaps, saved locally for personal use.</p>
+          <a href="https://www.shackmaps.com/way-of-the-hunter-2/new-laurentia">View original map ↗</a>
+        </footer>
+      </aside>
+
+      <main class="map-shell">
+        <div class="map-toolbar" aria-label="Map tools">
+          <div class="zoom-control">
+            <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+            <span id="zoom-level">3</span>
+            <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+          </div>
+          <button id="zoom-lock" type="button" aria-pressed="false" title="Prevent the zoom level from changing">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+            Zoom lock
+          </button>
+          <button id="reset-view" type="button" title="Reset view">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5"/></svg>
+            Reset view
+          </button>
+          <button id="add-pin" type="button" title="Add a personal pin">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-5.2 7-12a7 7 0 1 0-14 0c0 6.8 7 12 7 12Z"/><path d="M12 6v6m-3-3h6"/></svg>
+            Add pin
+          </button>
+        </div>
+
+        <div id="map" class="map" role="application" aria-label="Interactive map of New Laurentia" tabindex="0">
+          <div id="map-stage" class="map-stage">
+            <div id="tiles" class="tiles-layer" aria-hidden="true"></div>
+            <div id="markers" class="markers-layer"></div>
+          </div>
+          <div id="empty-state" class="empty-state" hidden>No locations match these filters.</div>
+          <div class="map-hint" id="map-hint">Drag to explore · Scroll to zoom</div>
+          <div class="coordinates" id="coordinates">0.000, 0.000</div>
+        </div>
+
+        <article id="pin-card" class="pin-card" hidden aria-live="polite"></article>
+      </main>
+    </div>
+
+    <div id="loading" class="loading-screen">
+      <div class="loading-mark"></div>
+      <p>Loading New Laurentia</p>
+    </div>
+
+    <dialog id="custom-pin-dialog" class="pin-dialog">
+      <form id="custom-pin-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Personal marker</p>
+            <h2>Add a pin</h2>
+          </div>
+          <button type="button" class="icon-button cancel-dialog" aria-label="Close">×</button>
+        </div>
+        <label>Label <input id="custom-pin-title" required maxlength="80" placeholder="e.g. Great elk spot" /></label>
+        <label>Notes <textarea id="custom-pin-notes" maxlength="300" placeholder="Optional notes"></textarea></label>
+        <fieldset>
+          <legend>Color</legend>
+          <div class="color-options">
+            <label><input type="radio" name="pin-color" value="#e7b648" checked><span style="--swatch:#e7b648"></span></label>
+            <label><input type="radio" name="pin-color" value="#db684b"><span style="--swatch:#db684b"></span></label>
+            <label><input type="radio" name="pin-color" value="#56a88b"><span style="--swatch:#56a88b"></span></label>
+            <label><input type="radio" name="pin-color" value="#718ed7"><span style="--swatch:#718ed7"></span></label>
+            <label><input type="radio" name="pin-color" value="#b47ad8"><span style="--swatch:#b47ad8"></span></label>
+          </div>
+        </fieldset>
+        <input id="custom-pin-lon" type="hidden" />
+        <input id="custom-pin-lat" type="hidden" />
+        <div class="dialog-actions">
+          <button type="button" class="secondary cancel-dialog">Cancel</button>
+          <button id="save-custom-pin" value="default" class="primary">Save pin</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
