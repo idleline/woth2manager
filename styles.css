@@ -79,6 +79,7 @@ button { color: inherit; }
 .map.is-relocating { cursor: grabbing; }
 .map-stage, .tiles-layer, .markers-layer { position: absolute; inset: 0; }
 .map-stage { transform: translate3d(0,0,0); will-change: transform; }
+.map-stage.is-zoom-animating { transition: transform 260ms cubic-bezier(.22,.8,.35,1); }
 .tile { position: absolute; display: block; max-width: none; image-rendering: auto; user-select: none; pointer-events: none; }
 .marker { position: absolute; z-index: 3; display: grid; place-items: center; width: 31px; height: 31px; padding: 0; transform: translate(-50%, -50%); background: rgba(24,30,26,.9); border: 2px solid var(--marker-color, #eee); border-radius: 50% 50% 50% 8px; box-shadow: 0 3px 8px rgba(0,0,0,.42); cursor: pointer; transition: filter .12s ease, opacity .12s ease, transform .12s ease; }
 .marker::after { content: ""; position: absolute; inset: 2px; border: 1px solid rgba(255,255,255,.13); border-radius: inherit; pointer-events: none; }
@@ -224,4 +225,8 @@ button { color: inherit; }
   .map-shell { position: absolute; inset: 0; }
   .map-toolbar { left: 24px; }
   .map-toolbar > button { width: 37px; padding: 0; justify-content: center; font-size: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-stage.is-zoom-animating { transition-duration: 1ms; }
 }

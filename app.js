@@ -1,4 +1,5 @@
 const TILE_SIZE = 256;
+const ZOOM_ANIMATION_MS = 260;
 const STORAGE = {
   completed: "new-laurentia.completed.v1",
   customPins: "new-laurentia.custom-pins.v1",
@@ -51,6 +52,8 @@ const state = {
   selected: null,
   addingPin: false,
   drag: null,
+  zoomAnimating: false,
+  zoomAnimationTimer: null,
 };
 
 const els = {};
@@ -252,7 +255,9 @@ function bindEvents() {
   });
   els.map.addEventListener("mousemove", updateCoordinateReadout);
   els.map.addEventListener("keydown", onMapKeydown);
-  window.addEventListener("resize", render);
+  window.addEventListener("resize", () => {
+    if (!state.zoomAnimating) render();
+  });
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
@@ -277,8 +282,8 @@ function render() {
   els.zoomLevel.textContent = state.zoom;
   els.zoomLock.setAttribute("aria-pressed", String(state.zoomLocked));
   els.zoomLock.classList.toggle("active", state.zoomLocked);
-  els.zoomIn.disabled = state.zoomLocked || state.zoom >= state.data.map.config.maxZoom;
-  els.zoomOut.disabled = state.zoomLocked || state.zoom <= state.data.map.config.minZoom;
+  els.zoomIn.disabled = state.zoomAnimating || state.zoomLocked || state.zoom >= state.data.map.config.maxZoom;
+  els.zoomOut.disabled = state.zoomAnimating || state.zoomLocked || state.zoom <= state.data.map.config.minZoom;
   saveStorage(STORAGE.view, { center: state.center, zoom: state.zoom });
 }
 
@@ -292,10 +297,11 @@ function renderTiles() {
   const centerPx = lonLatToWorld(state.center[0], state.center[1], state.zoom);
   const left = centerPx.x - rect.width / 2;
   const top = centerPx.y - rect.height / 2;
-  const minX = clamp(Math.floor(left / tileDisplaySize) - 1, 0, dimension - 1);
-  const maxX = clamp(Math.floor((left + rect.width) / tileDisplaySize) + 1, 0, dimension - 1);
-  const minY = clamp(Math.floor(top / tileDisplaySize) - 1, 0, dimension - 1);
-  const maxY = clamp(Math.floor((top + rect.height) / tileDisplaySize) + 1, 0, dimension - 1);
+  const tileBuffer = Math.max(2, Math.ceil(Math.max(rect.width, rect.height) / (tileDisplaySize * 2)) + 1);
+  const minX = clamp(Math.floor(left / tileDisplaySize) - tileBuffer, 0, dimension - 1);
+  const maxX = clamp(Math.floor((left + rect.width) / tileDisplaySize) + tileBuffer, 0, dimension - 1);
+  const minY = clamp(Math.floor(top / tileDisplaySize) - tileBuffer, 0, dimension - 1);
+  const maxY = clamp(Math.floor((top + rect.height) / tileDisplaySize) + tileBuffer, 0, dimension - 1);
   const fragment = document.createDocumentFragment();
 
   for (let x = minX; x <= maxX; x++) {
@@ -826,37 +832,83 @@ function setAllGroups(visible) {
 }
 
 function toggleZoomLock() {
+  if (state.zoomAnimating) return;
   state.zoomLocked = !state.zoomLocked;
   saveStorage(STORAGE.zoomLocked, state.zoomLocked);
   render();
 }
 
 function setZoom(next, anchor = null) {
-  if (state.zoomLocked) return;
+  if (state.zoomLocked || state.zoomAnimating) return;
   const config = state.data.map.config;
   const zoom = clamp(next, config.minZoom, config.maxZoom);
   if (zoom === state.zoom) return;
   const selectedAnimal = zoom > state.zoom ? getSelectedAnimalPin() : null;
+  let nextCenter = [...state.center];
 
   if (selectedAnimal) {
-    state.center = [...getPinLocation(selectedAnimal)];
+    nextCenter = [...getPinLocation(selectedAnimal)];
   } else if (anchor) {
     const rect = els.map.getBoundingClientRect();
     const offsetX = anchor.clientX - rect.left - rect.width / 2;
     const offsetY = anchor.clientY - rect.top - rect.height / 2;
     const centerPx = lonLatToWorld(state.center[0], state.center[1], state.zoom);
     const scale = 2 ** (zoom - state.zoom);
-    const nextCenter = worldToLonLat(
+    const anchoredCenter = worldToLonLat(
       (centerPx.x + offsetX) * scale - offsetX,
       (centerPx.y + offsetY) * scale - offsetY,
       zoom,
     );
-    state.center = clampCenter([nextCenter.lon, nextCenter.lat]);
+    nextCenter = clampCenter([anchoredCenter.lon, anchoredCenter.lat]);
   }
 
-  state.zoom = zoom;
   if (!selectedAnimal) closeCard();
-  render();
+  animateZoomTo(zoom, nextCenter);
+}
+
+function animateZoomTo(targetZoom, targetCenter) {
+  const rect = els.map.getBoundingClientRect();
+  const scale = 2 ** (targetZoom - state.zoom);
+  const fromCenter = lonLatToWorld(state.center[0], state.center[1], state.zoom);
+  const toCenter = lonLatToWorld(targetCenter[0], targetCenter[1], targetZoom);
+  const translateX = scale * fromCenter.x - toCenter.x + (1 - scale) * rect.width / 2;
+  const translateY = scale * fromCenter.y - toCenter.y + (1 - scale) * rect.height / 2;
+  const targetTransform = `translate3d(${translateX}px,${translateY}px,0) scale(${scale})`;
+  let finished = false;
+
+  state.zoomAnimating = true;
+  els.zoomLevel.textContent = targetZoom;
+  els.zoomIn.disabled = true;
+  els.zoomOut.disabled = true;
+  els.mapStage.classList.add("is-zoom-animating");
+  els.mapStage.style.transformOrigin = "0 0";
+  els.mapStage.style.transform = "translate3d(0,0,0) scale(1)";
+
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(state.zoomAnimationTimer);
+    els.mapStage.removeEventListener("transitionend", onTransitionEnd);
+    els.mapStage.classList.remove("is-zoom-animating");
+    els.mapStage.style.transform = "";
+    els.mapStage.style.transformOrigin = "";
+    state.zoom = targetZoom;
+    state.center = targetCenter;
+    state.zoomAnimating = false;
+    state.zoomAnimationTimer = null;
+    render();
+  };
+  const onTransitionEnd = (event) => {
+    if (event.target === els.mapStage && event.propertyName === "transform") finish();
+  };
+
+  els.mapStage.addEventListener("transitionend", onTransitionEnd);
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (state.zoomAnimating) els.mapStage.style.transform = targetTransform;
+    });
+  });
+  state.zoomAnimationTimer = setTimeout(finish, ZOOM_ANIMATION_MS + 120);
 }
 
 function getSelectedAnimalPin() {
@@ -866,6 +918,7 @@ function getSelectedAnimalPin() {
 }
 
 function resetView() {
+  if (state.zoomAnimating) return;
   state.center = [...state.data.map.config.center];
   if (!state.zoomLocked) state.zoom = 3;
   closeCard();
@@ -880,6 +933,7 @@ function toggleAddPin() {
 }
 
 function startDrag(event) {
+  if (state.zoomAnimating) return;
   if (event.button !== 0 || event.target.closest("button") || event.target.closest(".pin-card")) return;
   if (state.addingPin) {
     const location = clientToLonLat(event.clientX, event.clientY);
