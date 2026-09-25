@@ -17,8 +17,9 @@ Then open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 The map supports category filters, search, animal-specific eating/drinking/resting
 need zones, herd descriptions and population tracking, Often/Rarely need-zone
 visits, saved animal and need-zone relocation, infrastructure completion tracking,
-custom personal pins, drag/keyboard navigation, optional zoom locking,
-selected-animal or cursor-centered zooming, and zoom levels 3–7.
+animal-group and need-zone editing, custom personal pins, drag/keyboard navigation,
+optional zoom locking, selected-animal or cursor-centered zooming, and zoom levels
+3–7.
 Personal map data and the last map view are stored in the browser's local storage.
 
 ## Offline assets

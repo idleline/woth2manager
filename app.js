@@ -1,5 +1,6 @@
 const TILE_SIZE = 256;
 const ZOOM_ANIMATION_MS = 260;
+const DRAG_THRESHOLD_PX = 5;
 const WEB_MERCATOR_MAX_LAT = 85.05112878;
 const STORAGE = {
   completed: "new-laurentia.completed.v1",
@@ -11,6 +12,7 @@ const STORAGE = {
   zoomLocked: "new-laurentia.zoom-locked.v1",
   view: "new-laurentia.view.v1",
   savedFilters: "new-laurentia.saved-filters.v1",
+  animalGroupEdits: "new-laurentia.animal-group-edits.v1",
 };
 
 const MAX_AGE_ALIASES = {
@@ -30,6 +32,12 @@ const MAX_AGE_ALIASES = {
   "Wood Bison": "Bison",
 };
 
+const NEED_ZONE_COLORS = {
+  Drinking: "#86b9d0",
+  Eating: "#7eb46a",
+  Resting: "#d2ae58",
+};
+
 const state = {
   data: null,
   maxAges: {},
@@ -43,6 +51,11 @@ const state = {
   populations: readStorage(STORAGE.populations, {}),
   needZoneVisits: readStorage(STORAGE.needZoneVisits, {}),
   pinLocations: readStorage(STORAGE.pinLocations, {}),
+  animalGroupEdits: readStorage(STORAGE.animalGroupEdits, {
+    groups: [],
+    needZones: [],
+    removedNeedZoneIds: [],
+  }),
   hideCompleted: false,
   showNeedZones: false,
   zoomLocked: Boolean(readStorage(STORAGE.zoomLocked, false)),
@@ -55,8 +68,14 @@ const state = {
     stars: new Set(),
     fitnessDirection: "above",
   },
+  populationFormGenders: {},
   selected: null,
   addingPin: false,
+  editingAnimalGroups: false,
+  animalGroupDraft: null,
+  animalEditPlacement: null,
+  pendingGroupLocation: null,
+  pendingNeedZone: null,
   drag: null,
   zoomAnimating: false,
   zoomAnimationTimer: null,
@@ -87,6 +106,7 @@ async function init() {
     prepareData();
     restoreView();
     renderCategories();
+    renderAnimalGroupOptions();
     bindEvents();
     updateSavedFilterControls();
     render();
@@ -108,7 +128,10 @@ function cacheElements() {
     "custom-pin-title", "custom-pin-notes", "custom-pin-lon", "custom-pin-lat",
     "animal-filter-count", "fitness-filter", "count-filter", "count-comparison",
     "age-filter", "age-comparison", "clear-animal-filters",
-    "save-filters", "load-filters", "filter-save-status",
+    "save-filters", "load-filters", "filter-save-status", "edit-animal-groups",
+    "animal-edit-actions", "add-animal-group", "save-animal-groups", "animal-group-dialog",
+    "animal-group-form", "animal-group-options", "animal-group-location", "need-zone-dialog",
+    "need-zone-form", "need-zone-location", "need-zone-next",
   ]) {
     els[toCamel(id)] = document.getElementById(id);
   }
@@ -122,9 +145,39 @@ function prepareData() {
     parentColorByGroup.set(group.id, group.color || parent?.color || "#dedede");
     if (group.parentGroup && group.count) state.visibleGroups.add(group.id);
   }
-  for (const pin of state.data.pins) {
+  normalizeAnimalGroupEdits();
+  rebuildPinIndexes();
+}
+
+function normalizeAnimalGroupEdits() {
+  const edits = state.animalGroupEdits;
+  state.animalGroupEdits = {
+    groups: Array.isArray(edits?.groups) ? edits.groups : [],
+    needZones: Array.isArray(edits?.needZones) ? edits.needZones : [],
+    removedNeedZoneIds: Array.isArray(edits?.removedNeedZoneIds) ? edits.removedNeedZoneIds : [],
+  };
+}
+
+function getAnimalGroupEdits() {
+  return state.animalGroupDraft || state.animalGroupEdits;
+}
+
+function getMapPins() {
+  const edits = getAnimalGroupEdits();
+  const removed = new Set(edits.removedNeedZoneIds.map(String));
+  return [
+    ...state.data.pins.filter((pin) => !pin.parentPin || !removed.has(String(pin.id))),
+    ...edits.groups,
+    ...edits.needZones,
+  ];
+}
+
+function rebuildPinIndexes() {
+  pinById.clear();
+  needZonesByAnimal.clear();
+  for (const pin of getMapPins()) {
     pinById.set(pin.id, pin);
-    if (pin.parentPin) {
+    if (pin.parentPin !== null && pin.parentPin !== undefined) {
       const zones = needZonesByAnimal.get(pin.parentPin) || [];
       zones.push(pin);
       needZonesByAnimal.set(pin.parentPin, zones);
@@ -283,6 +336,24 @@ function renderCategories() {
   els.categories.replaceChildren(fragment);
 }
 
+function getAnimalGroups() {
+  const animals = state.data.groups.find((group) => group.title === "Animals" && !group.parentGroup);
+  return state.data.groups
+    .filter((group) => group.parentGroup === animals?.id && group.count)
+    .sort((a, b) => a.title.localeCompare(b.title));
+}
+
+function renderAnimalGroupOptions() {
+  els.animalGroupOptions.innerHTML = getAnimalGroups().map((group, index) => {
+    const icon = iconById.get(group.icon);
+    return `
+      <label>
+        <input type="radio" name="animal-group" value="${group.id}" ${index === 0 ? "checked" : ""}>
+        <span>${icon ? `<img src="assets/icons/${encodeURIComponent(icon.filename)}" alt="">` : ""}${escapeHtml(group.title)}</span>
+      </label>`;
+  }).join("");
+}
+
 function bindEvents() {
   els.categories.addEventListener("change", (event) => {
     if (!event.target.matches('input[type="checkbox"]')) return;
@@ -348,6 +419,9 @@ function bindEvents() {
   els.zoomLock.addEventListener("click", toggleZoomLock);
   els.resetView.addEventListener("click", resetView);
   els.addPin.addEventListener("click", toggleAddPin);
+  els.editAnimalGroups.addEventListener("click", beginAnimalGroupEditing);
+  els.addAnimalGroup.addEventListener("click", beginAnimalGroupPlacement);
+  els.saveAnimalGroups.addEventListener("click", saveAnimalGroupChanges);
   els.map.addEventListener("pointerdown", startDrag);
   window.addEventListener("pointermove", moveDrag);
   window.addEventListener("pointerup", endDrag);
@@ -371,6 +445,10 @@ function bindEvents() {
       els.search.focus();
     }
     if (event.key === "Escape") {
+      if (state.animalEditPlacement || state.pendingGroupLocation || state.pendingNeedZone) {
+        cancelAnimalPlacement();
+        return;
+      }
       const hadOpenPin = Boolean(state.selected || state.expandedAnimalId);
       closeCard();
       if (hadOpenPin) renderMarkers();
@@ -381,6 +459,205 @@ function bindEvents() {
   for (const button of els.customPinDialog.querySelectorAll(".cancel-dialog")) {
     button.addEventListener("click", () => els.customPinDialog.close());
   }
+  els.animalGroupForm.addEventListener("submit", addAnimalGroup);
+  for (const button of els.animalGroupDialog.querySelectorAll(".cancel-animal-group")) {
+    button.addEventListener("click", cancelAnimalPlacement);
+  }
+  els.needZoneForm.addEventListener("submit", advanceNeedZonePlacement);
+  for (const button of els.needZoneDialog.querySelectorAll(".cancel-need-zone")) {
+    button.addEventListener("click", cancelAnimalPlacement);
+  }
+}
+
+function cloneAnimalGroupEdits(edits) {
+  return JSON.parse(JSON.stringify(edits));
+}
+
+function beginAnimalGroupEditing() {
+  if (state.editingAnimalGroups) return;
+  if (state.addingPin) toggleAddPin();
+  closeCard();
+  state.editingAnimalGroups = true;
+  state.animalGroupDraft = cloneAnimalGroupEdits(state.animalGroupEdits);
+  rebuildPinIndexes();
+  updateAnimalEditControls();
+  renderMarkers();
+}
+
+function updateAnimalEditControls() {
+  els.editAnimalGroups.hidden = state.editingAnimalGroups;
+  els.animalEditActions.hidden = !state.editingAnimalGroups;
+  els.addPin.disabled = state.editingAnimalGroups;
+  els.map.classList.toggle("is-editing-animals", state.editingAnimalGroups);
+  updateMapInteractionHint();
+}
+
+function beginAnimalGroupPlacement() {
+  if (!state.editingAnimalGroups) return;
+  closeCard();
+  state.pendingGroupLocation = null;
+  state.pendingNeedZone = null;
+  setAnimalEditPlacement({ kind: "group" });
+}
+
+function setAnimalEditPlacement(placement) {
+  state.animalEditPlacement = placement;
+  els.addAnimalGroup.classList.toggle("active", placement?.kind === "group");
+  els.map.classList.toggle("is-placing-animal", Boolean(placement));
+  updateMapInteractionHint();
+}
+
+function updateMapInteractionHint() {
+  if (state.animalEditPlacement?.kind === "group") {
+    els.mapHint.textContent = "Click the map to choose the new animal group location · Esc to cancel";
+  } else if (state.animalEditPlacement?.kind === "need-zone") {
+    els.mapHint.textContent = "Click the map to place the need zone · Esc to cancel";
+  } else if (state.addingPin) {
+    els.mapHint.textContent = "Click the map to place your pin · Esc to cancel";
+  } else if (state.editingAnimalGroups) {
+    els.mapHint.textContent = "Select an animal group or need zone to edit · Save Changes when finished";
+  } else {
+    els.mapHint.textContent = "Drag to explore · Scroll to zoom";
+  }
+}
+
+function openAnimalGroupDialog(location) {
+  state.pendingGroupLocation = location;
+  setAnimalEditPlacement(null);
+  els.animalGroupForm.reset();
+  const firstOption = els.animalGroupForm.querySelector('input[name="animal-group"]');
+  if (firstOption) firstOption.checked = true;
+  els.animalGroupLocation.textContent = `${location.lat.toFixed(5)}° lat · ${location.lon.toFixed(5)}° lon`;
+  els.animalGroupDialog.showModal();
+}
+
+function addAnimalGroup(event) {
+  event.preventDefault();
+  if (!state.editingAnimalGroups || !state.pendingGroupLocation) return;
+  const groupId = Number(new FormData(els.animalGroupForm).get("animal-group"));
+  const group = groupById.get(groupId);
+  if (!group) return;
+  const id = `animal-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const pin = {
+    id,
+    group: group.id,
+    title: group.title,
+    description: null,
+    slug: group.slug,
+    location: [state.pendingGroupLocation.lon, state.pendingGroupLocation.lat],
+    iconOverride: null,
+    colorOverride: null,
+    parentPin: null,
+    type: "pin",
+    guideLink: null,
+    youtubeUrl: null,
+  };
+  state.animalGroupDraft.groups.push(pin);
+  state.visibleGroups.add(group.id);
+  const checkbox = els.categories.querySelector(`input[value="${group.id}"]`);
+  if (checkbox) checkbox.checked = true;
+  state.pendingGroupLocation = null;
+  els.animalGroupDialog.close();
+  rebuildPinIndexes();
+  selectSourcePin(pin);
+}
+
+function beginNeedZonePlacement(pin) {
+  if (!state.editingAnimalGroups || !isAnimalPin(pin)) return;
+  state.pendingGroupLocation = null;
+  state.pendingNeedZone = { parentId: pin.id, type: null, location: null };
+  els.needZoneForm.reset();
+  els.needZoneLocation.hidden = true;
+  els.needZoneLocation.textContent = "";
+  els.needZoneNext.textContent = "Choose location";
+  for (const input of els.needZoneForm.elements["need-zone-type"]) input.disabled = false;
+  els.needZoneDialog.showModal();
+}
+
+function advanceNeedZonePlacement(event) {
+  event.preventDefault();
+  if (!state.editingAnimalGroups || !state.pendingNeedZone) return;
+  if (!state.pendingNeedZone.location) {
+    state.pendingNeedZone.type = new FormData(els.needZoneForm).get("need-zone-type") || "Drinking";
+    els.needZoneDialog.close();
+    closeCard();
+    setAnimalEditPlacement({ kind: "need-zone" });
+    return;
+  }
+
+  const parent = pinById.get(state.pendingNeedZone.parentId);
+  if (!parent) return;
+  const type = state.pendingNeedZone.type;
+  const filenamePrefix = type.toLowerCase();
+  const icon = state.data.icons.find((item) => item.filename.toLowerCase().startsWith(filenamePrefix));
+  const id = `zone-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  state.animalGroupDraft.needZones.push({
+    id,
+    group: parent.group,
+    title: `${type} Spot`,
+    description: null,
+    slug: `${type.toLowerCase()}-spot`,
+    location: [state.pendingNeedZone.location.lon, state.pendingNeedZone.location.lat],
+    iconOverride: icon?.id || null,
+    colorOverride: NEED_ZONE_COLORS[type],
+    parentPin: parent.id,
+    type: "pin",
+    guideLink: null,
+    youtubeUrl: null,
+  });
+  state.pendingNeedZone = null;
+  els.needZoneDialog.close();
+  rebuildPinIndexes();
+  state.expandedAnimalId = parent.id;
+  openPinCard(parent);
+  renderMarkers();
+}
+
+function openNeedZoneConfirmation(location) {
+  if (!state.pendingNeedZone) return;
+  state.pendingNeedZone.location = location;
+  setAnimalEditPlacement(null);
+  els.needZoneLocation.hidden = false;
+  els.needZoneLocation.textContent = `${location.lat.toFixed(5)}° lat · ${location.lon.toFixed(5)}° lon`;
+  els.needZoneNext.textContent = "Save";
+  const typeInputs = els.needZoneForm.elements["need-zone-type"];
+  for (const input of typeInputs) input.disabled = true;
+  els.needZoneDialog.showModal();
+}
+
+function cancelAnimalPlacement() {
+  if (els.animalGroupDialog.open) els.animalGroupDialog.close();
+  if (els.needZoneDialog.open) els.needZoneDialog.close();
+  state.pendingGroupLocation = null;
+  state.pendingNeedZone = null;
+  setAnimalEditPlacement(null);
+}
+
+function removeNeedZone(zone) {
+  if (!state.editingAnimalGroups || !zone.parentPin) return;
+  const edits = state.animalGroupDraft;
+  const customIndex = edits.needZones.findIndex((item) => item.id === zone.id);
+  if (customIndex >= 0) {
+    edits.needZones.splice(customIndex, 1);
+  } else if (!edits.removedNeedZoneIds.map(String).includes(String(zone.id))) {
+    edits.removedNeedZoneIds.push(zone.id);
+  }
+  closeCard();
+  rebuildPinIndexes();
+  renderMarkers();
+}
+
+function saveAnimalGroupChanges() {
+  if (!state.editingAnimalGroups) return;
+  cancelAnimalPlacement();
+  state.animalGroupEdits = cloneAnimalGroupEdits(state.animalGroupDraft);
+  saveStorage(STORAGE.animalGroupEdits, state.animalGroupEdits);
+  state.animalGroupDraft = null;
+  state.editingAnimalGroups = false;
+  closeCard();
+  rebuildPinIndexes();
+  updateAnimalEditControls();
+  renderMarkers();
 }
 
 function clearAnimalFilters() {
@@ -544,11 +821,10 @@ function renderMarkers({ refreshCard = true } = {}) {
   const query = state.query;
   const candidates = [];
 
-  for (const pin of state.data.pins) {
+  for (const pin of getMapPins()) {
     if (!state.visibleGroups.has(pin.group)) continue;
     if (state.hideCompleted && isInfrastructurePin(pin) && state.completed.has(pin.id)) continue;
     if (query && !pin._search.includes(query)) continue;
-    if (isAnimalPin(pin) && state.expandedAnimalId && pin.id !== state.expandedAnimalId) continue;
     if (isAnimalPin(pin) && !animalMatchesFilters(pin)) continue;
     const belongsToExpandedAnimal = pin.parentPin === state.expandedAnimalId;
     if (pin.parentPin && !state.showNeedZones && !belongsToExpandedAnimal && !query) continue;
@@ -579,7 +855,9 @@ function renderMarkers({ refreshCard = true } = {}) {
 function createMarker(pin, x, y) {
   const { group } = getPinContext(pin);
   const icon = iconById.get(pin.iconOverride || group?.icon);
-  const color = pin.colorOverride || parentColorByGroup.get(pin.group) || "#dedede";
+  const color = pin.parentPin
+    ? getNeedZoneColor(pin)
+    : pin.colorOverride || parentColorByGroup.get(pin.group) || "#dedede";
   const animal = isAnimalPin(pin);
   const population = animal ? getPopulation(pin) : [];
   const trophyBadge = animal ? getAnimalTrophyBadge(pin) : null;
@@ -597,6 +875,7 @@ function createMarker(pin, x, y) {
     state.needZoneVisits[pin.id] === "often" ? "is-often" : "",
     state.relocatingPinId === pin.id ? "is-relocating" : "",
     state.expandedAnimalId === pin.id ? "is-expanded" : "",
+    animal && state.expandedAnimalId && pin.id !== state.expandedAnimalId ? "is-faded" : "",
     isInfrastructurePin(pin) && state.completed.has(pin.id) ? "is-complete" : "",
   ].filter(Boolean).join(" ");
   button.style.left = `${x}px`;
@@ -650,7 +929,9 @@ function createCustomMarker(pin, x, y) {
 
 function openPinCard(pin) {
   const { group, parent } = getPinContext(pin);
-  const color = pin.colorOverride || parentColorByGroup.get(pin.group) || "#e7b648";
+  const color = pin.parentPin
+    ? getNeedZoneColor(pin)
+    : pin.colorOverride || parentColorByGroup.get(pin.group) || "#e7b648";
   const complete = state.completed.has(pin.id);
   const needZones = needZonesByAnimal.get(pin.id) || [];
   const animal = isAnimalPin(pin);
@@ -661,6 +942,8 @@ function openPinCard(pin) {
   const location = getPinLocation(pin);
   const actions = [
     relocatable && !relocating ? `<button class="relocate-button">Relocate</button>` : "",
+    animal && state.editingAnimalGroups ? `<button class="add-need-zone-button">Add Need Zone</button>` : "",
+    zone && state.editingAnimalGroups ? `<button class="remove-need-zone-button delete-button">Remove Need Zone</button>` : "",
     infrastructure
       ? `<button class="complete-button ${complete ? "active" : ""}">${complete ? "✓ Completed" : "Mark completed"}</button>`
       : "",
@@ -688,6 +971,8 @@ function openPinCard(pin) {
   });
   els.pinCard.querySelector(".complete-button")?.addEventListener("click", () => toggleCompleted(pin.id));
   els.pinCard.querySelector(".relocate-button")?.addEventListener("click", () => beginRelocation(pin));
+  els.pinCard.querySelector(".add-need-zone-button")?.addEventListener("click", () => beginNeedZonePlacement(pin));
+  els.pinCard.querySelector(".remove-need-zone-button")?.addEventListener("click", () => removeNeedZone(pin));
   els.pinCard.querySelector(".save-relocation")?.addEventListener("click", () => saveRelocation(pin));
   els.pinCard.querySelector(".cancel-relocation")?.addEventListener("click", () => cancelRelocation(pin));
   const descriptionInput = els.pinCard.querySelector(".animal-description-editor textarea");
@@ -695,15 +980,19 @@ function openPinCard(pin) {
     els.pinCard.querySelector(".animal-description-editor label span").textContent = `${descriptionInput.value.length}/255`;
   });
   els.pinCard.querySelector(".save-description")?.addEventListener("click", () => saveAnimalDescription(pin));
+  els.pinCard.querySelector(".increment-population-age")?.addEventListener("click", () => incrementPopulationAge(pin, group));
   setupPopulationForm(pin, group);
   for (const button of els.pinCard.querySelectorAll(".remove-animal")) {
     button.addEventListener("click", () => removePopulationMember(pin, button.dataset.memberId));
+  }
+  for (const button of els.pinCard.querySelectorAll(".adjust-trophy-rating")) {
+    button.addEventListener("click", (event) => adjustTrophyRating(pin, button.dataset.memberId, event.shiftKey ? -1 : 1));
   }
   for (const button of els.pinCard.querySelectorAll(".zone-frequency-button")) {
     button.addEventListener("click", () => setNeedZoneFrequency(pin, button.dataset.frequency));
   }
   for (const button of els.pinCard.querySelectorAll(".need-zone-row")) {
-    button.addEventListener("click", () => focusNeedZone(Number(button.dataset.needZoneId), pin.id));
+    button.addEventListener("click", () => focusNeedZone(button.dataset.needZoneId, pin.id));
   }
 }
 
@@ -760,6 +1049,7 @@ function clearRelocation() {
 function renderAnimalPanel(pin, group) {
   const description = getAnimalDescription(pin);
   const population = state.populations[pin.id] || [];
+  const formGender = state.populationFormGenders[pin.id] === "female" ? "female" : "male";
   const maxAge = getAnimalMaxAge(group.title);
   const members = population.length
     ? renderPopulationTable(population, maxAge)
@@ -771,18 +1061,21 @@ function renderAnimalPanel(pin, group) {
       <button type="button" class="save-description">Save description</button>
     </section>
     <section class="population-section">
-      <header><span>Population</span><strong>${population.length}</strong></header>
+      <header>
+        <span class="population-heading">Population <strong>${population.length}</strong></span>
+        <span class="population-age-control">Age <button type="button" class="increment-population-age" aria-label="Increase every animal's age by one" title="Increase every animal's age by one" ${population.length ? "" : "disabled"}>+</button></span>
+      </header>
       <div class="population-list">${members}</div>
       <details class="population-editor">
         <summary>Modify population</summary>
         <form class="population-form">
-          <input type="hidden" name="gender" value="male">
+          <input type="hidden" name="gender" value="${formGender}">
           <input type="hidden" name="trophy" value="1">
           <fieldset class="population-field gender-field">
             <legend>Gender</legend>
             <div class="gender-toggles">
-              <button type="button" class="gender-toggle active" data-gender="male" aria-pressed="true"><span>♂</span> Male</button>
-              <button type="button" class="gender-toggle" data-gender="female" aria-pressed="false"><span>♀</span> Female</button>
+              <button type="button" class="gender-toggle${formGender === "male" ? " active" : ""}" data-gender="male" aria-pressed="${formGender === "male"}"><span>♂</span> Male</button>
+              <button type="button" class="gender-toggle${formGender === "female" ? " active" : ""}" data-gender="female" aria-pressed="${formGender === "female"}"><span>♀</span> Female</button>
             </div>
           </fieldset>
           <label class="population-field">Age
@@ -791,7 +1084,7 @@ function renderAnimalPanel(pin, group) {
           <label class="population-field">Fitness
             <span class="fitness-input"><input name="fitness" type="number" min="0" max="100" step="0.1" required inputmode="decimal"><b>%</b></span>
           </label>
-          <fieldset class="population-field trophy-field">
+          <fieldset class="population-field trophy-field" ${formGender === "female" ? "hidden" : ""}>
             <legend>Trophy rating</legend>
             <div class="trophy-toggles" aria-label="Trophy rating">
               ${[1, 2, 3, 4, 5].map((rating) => `<button type="button" data-rating="${rating}" aria-pressed="${rating === 1}">${"★".repeat(rating)}</button>`).join("")}
@@ -805,6 +1098,10 @@ function renderAnimalPanel(pin, group) {
 }
 
 function renderPopulationTable(population, maxAge) {
+  const fitnessValues = population.map((member) => Number(member.fitness)).filter(Number.isFinite);
+  const averageFitness = fitnessValues.length
+    ? fitnessValues.reduce((sum, fitness) => sum + fitness, 0) / fitnessValues.length
+    : null;
   const sorted = [...population].sort((a, b) => {
     const genderOrder = Number(a.gender !== "male") - Number(b.gender !== "male");
     if (genderOrder) return genderOrder;
@@ -822,6 +1119,10 @@ function renderPopulationTable(population, maxAge) {
         <span role="columnheader"><span class="sr-only">Remove</span></span>
       </div>
       ${sorted.map((member) => renderPopulationMember(member, maxAge)).join("")}
+      <div class="population-average" role="row">
+        <span role="cell">Average fitness</span>
+        <strong role="cell">${averageFitness === null ? "—" : `${averageFitness.toFixed(1)}%`}</strong>
+      </div>
     </div>`;
 }
 
@@ -829,12 +1130,15 @@ function renderPopulationMember(member, maxAge) {
   const male = member.gender === "male";
   const rating = male ? clamp(Number(member.trophy) || 1, 1, 5) : 0;
   const stars = male ? `${"★".repeat(rating)}${"·".repeat(5 - rating)}` : "—";
+  const reachedMaxAge = maxAge !== null && Number(member.age) >= maxAge;
   return `
-    <div class="population-row" role="row">
+    <div class="population-row${reachedMaxAge ? " is-max-age" : ""}" role="row"${reachedMaxAge ? ` aria-label="Maximum age reached" title="Maximum age reached"` : ""}>
       <strong class="population-sex" role="cell" aria-label="${male ? "Male" : "Female"}">${male ? "♂" : "♀"}</strong>
       <span role="cell">${member.age}/${maxAge ?? "—"}</span>
       <span role="cell">${Number(member.fitness).toFixed(1)}%</span>
-      <span class="population-stars" role="cell" aria-label="${male ? `${rating} star trophy rating` : "Not applicable"}">${stars}</span>
+      ${male
+        ? `<span class="population-stars-cell" role="cell"><button type="button" class="population-stars adjust-trophy-rating" data-member-id="${escapeAttribute(member.id)}" aria-label="${rating} star trophy rating. Click to add a star; Shift-click to remove a star" title="Click to add a star · Shift-click to remove a star">${stars}</button></span>`
+        : `<span class="population-stars population-stars-static" role="cell" aria-label="Not applicable">${stars}</span>`}
       <button type="button" class="remove-animal" data-member-id="${escapeAttribute(member.id)}" aria-label="Remove animal from herd">−</button>
     </div>`;
 }
@@ -842,12 +1146,14 @@ function renderPopulationMember(member, maxAge) {
 function setupPopulationForm(pin, group) {
   const form = els.pinCard.querySelector(".population-form");
   if (!form) return;
+  let submittedWithEnter = false;
   const genderInput = form.elements.gender;
   const trophyInput = form.elements.trophy;
   const trophyField = form.querySelector(".trophy-field");
   for (const button of form.querySelectorAll(".gender-toggle")) {
     button.addEventListener("click", () => {
       genderInput.value = button.dataset.gender;
+      state.populationFormGenders[pin.id] = button.dataset.gender;
       for (const option of form.querySelectorAll(".gender-toggle")) {
         const active = option === button;
         option.classList.toggle("active", active);
@@ -864,7 +1170,14 @@ function setupPopulationForm(pin, group) {
       }
     });
   }
-  form.addEventListener("submit", (event) => addPopulationMember(event, pin, group));
+  form.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing || !event.target.matches('input:not([type="hidden"]), button[type="submit"]')) return;
+    event.preventDefault();
+    submittedWithEnter = true;
+    form.requestSubmit();
+    submittedWithEnter = false;
+  });
+  form.addEventListener("submit", (event) => addPopulationMember(event, pin, group, submittedWithEnter));
 }
 
 function saveAnimalDescription(pin) {
@@ -875,12 +1188,13 @@ function saveAnimalDescription(pin) {
   renderMarkers();
 }
 
-function addPopulationMember(event, pin, group) {
+function addPopulationMember(event, pin, group, focusAgeAfterSubmit = false) {
   event.preventDefault();
   const form = event.currentTarget;
   if (!form.reportValidity()) return;
   const values = new FormData(form);
   const gender = values.get("gender");
+  state.populationFormGenders[pin.id] = gender;
   const member = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     gender,
@@ -894,11 +1208,41 @@ function addPopulationMember(event, pin, group) {
   renderMarkers();
   const editor = els.pinCard.querySelector(".population-editor");
   if (editor) editor.open = true;
+  if (focusAgeAfterSubmit) els.pinCard.querySelector('.population-form input[name="age"]')?.focus();
 }
 
 function removePopulationMember(pin, memberId) {
   const population = state.populations[pin.id] || [];
   state.populations[pin.id] = population.filter((member) => member.id !== memberId);
+  saveStorage(STORAGE.populations, state.populations);
+  renderMarkers();
+}
+
+function adjustTrophyRating(pin, memberId, amount) {
+  const population = state.populations[pin.id] || [];
+  let changed = false;
+  state.populations[pin.id] = population.map((member) => {
+    if (member.id !== memberId || member.gender !== "male") return member;
+    const currentRating = clamp(Number(member.trophy) || 1, 1, 5);
+    const nextRating = clamp(currentRating + amount, 1, 5);
+    if (nextRating === currentRating) return member;
+    changed = true;
+    return { ...member, trophy: nextRating };
+  });
+  if (!changed) return;
+  saveStorage(STORAGE.populations, state.populations);
+  renderMarkers();
+}
+
+function incrementPopulationAge(pin, group) {
+  const population = state.populations[pin.id] || [];
+  if (!population.length) return;
+  const maxAge = getAnimalMaxAge(group.title);
+  state.populations[pin.id] = population.map((member) => {
+    const currentAge = Number(member.age);
+    const nextAge = (Number.isFinite(currentAge) ? currentAge : 0) + 1;
+    return { ...member, age: maxAge === null ? nextAge : Math.min(nextAge, maxAge) };
+  });
   saveStorage(STORAGE.populations, state.populations);
   renderMarkers();
 }
@@ -961,8 +1305,8 @@ function renderNeedZones(needZones) {
     const location = getPinLocation(zone);
     typeCounts[type] = (typeCounts[type] || 0) + 1;
     return `
-      <button type="button" class="need-zone-row ${frequency ? `is-${frequency}` : ""}" data-need-zone-id="${zone.id}">
-        <span class="need-zone-icon" style="--need-color:${zone.colorOverride || "#e7b648"}">
+      <button type="button" class="need-zone-row ${frequency ? `is-${frequency}` : ""}" data-need-zone-id="${escapeAttribute(zone.id)}">
+        <span class="need-zone-icon" style="--need-color:${getNeedZoneColor(zone)}">
           ${icon ? `<img src="assets/icons/${encodeURIComponent(icon.filename)}" alt="">` : ""}
         </span>
         <span>${type} Spot ${typeCounts[type]}${frequency ? `<em>${frequency}</em>` : ""}</span>
@@ -988,8 +1332,12 @@ function getNeedZoneType(zone) {
   return "Resting";
 }
 
+function getNeedZoneColor(zone) {
+  return NEED_ZONE_COLORS[getNeedZoneType(zone)] || "#e7b648";
+}
+
 function focusNeedZone(id, animalId) {
-  const zone = pinById.get(id);
+  const zone = pinById.get(id) || pinById.get(Number(id));
   if (!zone) return;
   state.center = clampCenter(getPinLocation(zone));
   state.expandedAnimalId = animalId;
@@ -1073,7 +1421,7 @@ function setZoom(next, anchor = null) {
   const config = state.data.map.config;
   const zoom = clamp(next, config.minZoom, config.maxZoom);
   if (zoom === state.zoom) return;
-  const selectedAnimal = zoom > state.zoom ? getSelectedAnimalPin() : null;
+  const selectedAnimal = getSelectedAnimalPin();
   let nextCenter = [...state.center];
 
   if (selectedAnimal) {
@@ -1158,15 +1506,24 @@ function resetView() {
 }
 
 function toggleAddPin() {
+  if (state.editingAnimalGroups) return;
   state.addingPin = !state.addingPin;
   els.addPin.classList.toggle("active", state.addingPin);
   els.map.classList.toggle("is-adding", state.addingPin);
-  els.mapHint.textContent = state.addingPin ? "Click the map to place your pin · Esc to cancel" : "Drag to explore · Scroll to zoom";
+  updateMapInteractionHint();
 }
 
 function startDrag(event) {
   if (state.zoomAnimating) return;
   if (event.button !== 0 || event.target.closest("button") || event.target.closest(".pin-card")) return;
+  if (state.animalEditPlacement?.kind === "group") {
+    openAnimalGroupDialog(clientToLonLat(event.clientX, event.clientY));
+    return;
+  }
+  if (state.animalEditPlacement?.kind === "need-zone") {
+    openNeedZoneConfirmation(clientToLonLat(event.clientX, event.clientY));
+    return;
+  }
   if (state.addingPin) {
     const location = clientToLonLat(event.clientX, event.clientY);
     els.customPinLon.value = location.lon;
@@ -1205,13 +1562,16 @@ function endDrag() {
     return;
   }
   if (!state.drag) return;
-  const centerPx = lonLatToWorld(state.center[0], state.center[1], state.zoom);
-  const next = worldToLonLat(centerPx.x - state.drag.dx, centerPx.y - state.drag.dy, state.zoom);
-  state.center = clampCenter([next.lon, next.lat]);
+  const dragged = Math.hypot(state.drag.dx, state.drag.dy) >= DRAG_THRESHOLD_PX;
+  if (dragged) {
+    const centerPx = lonLatToWorld(state.center[0], state.center[1], state.zoom);
+    const next = worldToLonLat(centerPx.x - state.drag.dx, centerPx.y - state.drag.dy, state.zoom);
+    state.center = clampCenter([next.lon, next.lat]);
+  }
   state.drag = null;
   els.mapStage.style.transform = "";
   els.map.classList.remove("is-dragging");
-  closeCard();
+  if (!dragged || !getSelectedAnimalPin()) closeCard();
   render();
 }
 

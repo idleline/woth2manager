@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#111714" />
     <title>New Laurentia — Offline Map</title>
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=20260922-4" />
+    <link rel="stylesheet" href="styles.css?v=20260925-1" />
   </head>
   <body>
     <div id="app" class="app is-loading">
@@ -122,6 +122,20 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-5.2 7-12a7 7 0 1 0-14 0c0 6.8 7 12 7 12Z"/><path d="M12 6v6m-3-3h6"/></svg>
             Add pin
           </button>
+          <button id="edit-animal-groups" type="button" title="Add animal groups and manage need zones">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></svg>
+            Edit Animal Groups
+          </button>
+          <div id="animal-edit-actions" class="animal-edit-actions" hidden>
+            <button id="add-animal-group" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              Add Group
+            </button>
+            <button id="save-animal-groups" class="primary" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+              Save Changes
+            </button>
+          </div>
         </div>
 
         <div id="map" class="map" role="application" aria-label="Interactive map of New Laurentia" tabindex="0">
@@ -186,6 +200,52 @@
       </form>
     </dialog>
 
-    <script src="app.js?v=20260922-4" defer></script>
+    <dialog id="animal-group-dialog" class="pin-dialog animal-group-dialog">
+      <form id="animal-group-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Animal groups</p>
+            <h2>Add Group</h2>
+          </div>
+          <button type="button" class="icon-button cancel-animal-group" aria-label="Close">×</button>
+        </div>
+        <fieldset>
+          <legend>Choose an animal</legend>
+          <div id="animal-group-options" class="animal-group-options"></div>
+        </fieldset>
+        <p id="animal-group-location" class="dialog-location"></p>
+        <div class="dialog-actions">
+          <button type="button" class="secondary cancel-animal-group">Cancel</button>
+          <button value="default" class="primary">Add</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="need-zone-dialog" class="pin-dialog need-zone-dialog">
+      <form id="need-zone-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Animal group</p>
+            <h2>Add Need Zone</h2>
+          </div>
+          <button type="button" class="icon-button cancel-need-zone" aria-label="Close">×</button>
+        </div>
+        <fieldset>
+          <legend>Need zone type</legend>
+          <div class="need-zone-type-options">
+            <label><input type="radio" name="need-zone-type" value="Drinking" checked><span><img src="assets/icons/drinking_1x.webp" alt="">Drinking</span></label>
+            <label><input type="radio" name="need-zone-type" value="Resting"><span><img src="assets/icons/resting_1x.webp" alt="">Resting</span></label>
+            <label><input type="radio" name="need-zone-type" value="Eating"><span><img src="assets/icons/eating_1x.webp" alt="">Eating</span></label>
+          </div>
+        </fieldset>
+        <p id="need-zone-location" class="dialog-location" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" class="secondary cancel-need-zone">Cancel</button>
+          <button id="need-zone-next" value="default" class="primary">Choose location</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="app.js?v=20260925-1" defer></script>
   </body>
 </html>
