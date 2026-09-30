@@ -1,7 +1,13 @@
 const TILE_SIZE = 256;
-const ZOOM_ANIMATION_MS = 260;
+const ZOOM_ANIMATION_MS = 360;
 const DRAG_THRESHOLD_PX = 5;
 const WEB_MERCATOR_MAX_LAT = 85.05112878;
+const ZOOM_STEP_OPTIONS = [0.1, 0.25, 0.5, 1];
+const DEFAULT_SETTINGS = {
+  zoomStep: 0.25,
+  centerZoomOnSelected: true,
+  iconFadeOpacity: 0.45,
+};
 const STORAGE = {
   completed: "new-laurentia.completed.v1",
   customPins: "new-laurentia.custom-pins.v1",
@@ -12,7 +18,10 @@ const STORAGE = {
   zoomLocked: "new-laurentia.zoom-locked.v1",
   view: "new-laurentia.view.v1",
   savedFilters: "new-laurentia.saved-filters.v1",
+  savedViews: "new-laurentia.saved-views.v1",
   animalGroupEdits: "new-laurentia.animal-group-edits.v1",
+  settings: "new-laurentia.settings.v1",
+  defaultNeedZones: "new-laurentia.default-need-zones.v1",
 };
 
 const MAX_AGE_ALIASES = {
@@ -54,8 +63,14 @@ const state = {
   animalGroupEdits: readStorage(STORAGE.animalGroupEdits, {
     groups: [],
     needZones: [],
+    removedGroupIds: [],
     removedNeedZoneIds: [],
+    removedPinIds: [],
   }),
+  settings: normalizeSettings(readStorage(STORAGE.settings, {})),
+  defaultNeedZones: readStorage(STORAGE.defaultNeedZones, null),
+  savedFilters: normalizeSavedCollection(readStorage(STORAGE.savedFilters, null), "filter"),
+  savedViews: normalizeSavedCollection(readStorage(STORAGE.savedViews, null), "view"),
   hideCompleted: false,
   showNeedZones: false,
   zoomLocked: Boolean(readStorage(STORAGE.zoomLocked, false)),
@@ -73,12 +88,16 @@ const state = {
   addingPin: false,
   editingAnimalGroups: false,
   animalGroupDraft: null,
+  animalEditRemovedPinIds: new Set(),
   animalEditPlacement: null,
   pendingGroupLocation: null,
   pendingNeedZone: null,
   drag: null,
   zoomAnimating: false,
   zoomAnimationTimer: null,
+  zoomAnimationFinish: null,
+  mapActionStatusTimer: null,
+  savedItemDialogKind: "filter",
 };
 
 const els = {};
@@ -104,11 +123,15 @@ async function init() {
     state.maxAges = animalData.animals;
     state.needZoneSchedules = animalData.needZoneSchedules || {};
     prepareData();
+    persistSavedItems("filter");
+    persistSavedItems("view");
+    ensureDefaultNeedZoneSnapshot();
     restoreView();
     renderCategories();
     renderAnimalGroupOptions();
     bindEvents();
-    updateSavedFilterControls();
+    syncSettingsControls();
+    updateSavedItemControls();
     render();
     updateProgress();
     document.querySelector("#app").classList.remove("is-loading");
@@ -128,10 +151,18 @@ function cacheElements() {
     "custom-pin-title", "custom-pin-notes", "custom-pin-lon", "custom-pin-lat",
     "animal-filter-count", "fitness-filter", "count-filter", "count-comparison",
     "age-filter", "age-comparison", "clear-animal-filters",
-    "save-filters", "load-filters", "filter-save-status", "edit-animal-groups",
+    "save-filters", "load-filters", "save-view", "load-view", "filter-save-status", "edit-animal-groups",
+    "age-all-animals", "map-action-status",
     "animal-edit-actions", "add-animal-group", "save-animal-groups", "animal-group-dialog",
     "animal-group-form", "animal-group-options", "animal-group-location", "need-zone-dialog",
     "need-zone-form", "need-zone-location", "need-zone-next",
+    "open-settings", "settings-dialog", "zoom-step", "center-zoom-on-selected",
+    "icon-fade-opacity", "icon-fade-value", "delete-populations", "reset-need-zones",
+    "delete-need-zones", "load-default-need-zones", "reset-completed", "settings-status",
+    "save-item-dialog", "save-item-form", "save-item-eyebrow", "save-item-title",
+    "save-item-name", "save-item-help", "confirm-save-item", "load-item-dialog",
+    "load-item-form", "load-item-eyebrow", "load-item-title", "load-item-legend",
+    "load-item-list", "apply-saved-item", "settings-saved-filters", "settings-saved-views",
   ]) {
     els[toCamel(id)] = document.getElementById(id);
   }
@@ -154,21 +185,51 @@ function normalizeAnimalGroupEdits() {
   state.animalGroupEdits = {
     groups: Array.isArray(edits?.groups) ? edits.groups : [],
     needZones: Array.isArray(edits?.needZones) ? edits.needZones : [],
+    removedGroupIds: Array.isArray(edits?.removedGroupIds) ? edits.removedGroupIds : [],
     removedNeedZoneIds: Array.isArray(edits?.removedNeedZoneIds) ? edits.removedNeedZoneIds : [],
+    removedPinIds: Array.isArray(edits?.removedPinIds) ? edits.removedPinIds : [],
   };
+}
+
+function normalizeSettings(settings) {
+  const zoomStep = Number(settings?.zoomStep);
+  const opacity = Number(settings?.iconFadeOpacity);
+  return {
+    zoomStep: ZOOM_STEP_OPTIONS.includes(zoomStep) ? zoomStep : DEFAULT_SETTINGS.zoomStep,
+    centerZoomOnSelected: settings?.centerZoomOnSelected === undefined
+      ? DEFAULT_SETTINGS.centerZoomOnSelected
+      : Boolean(settings.centerZoomOnSelected),
+    iconFadeOpacity: Number.isFinite(opacity)
+      ? clamp(opacity, 0.1, 0.9)
+      : DEFAULT_SETTINGS.iconFadeOpacity,
+  };
+}
+
+function ensureDefaultNeedZoneSnapshot() {
+  if (!Array.isArray(state.defaultNeedZones)) {
+    state.defaultNeedZones = state.data.pins
+      .filter((pin) => pin.parentPin !== null && pin.parentPin !== undefined)
+      .map((pin) => JSON.parse(JSON.stringify(pin)));
+    saveStorage(STORAGE.defaultNeedZones, state.defaultNeedZones);
+  }
 }
 
 function getAnimalGroupEdits() {
   return state.animalGroupDraft || state.animalGroupEdits;
 }
 
-function getMapPins() {
-  const edits = getAnimalGroupEdits();
-  const removed = new Set(edits.removedNeedZoneIds.map(String));
+function getMapPins(edits = getAnimalGroupEdits()) {
+  const removedGroups = new Set(edits.removedGroupIds.map(String));
+  const removedNeedZones = new Set(edits.removedNeedZoneIds.map(String));
+  const removedPins = new Set(edits.removedPinIds.map(String));
   return [
-    ...state.data.pins.filter((pin) => !pin.parentPin || !removed.has(String(pin.id))),
+    ...state.data.pins.filter((pin) => {
+      if (removedPins.has(String(pin.id))) return false;
+      if (!pin.parentPin) return !removedGroups.has(String(pin.id));
+      return !removedGroups.has(String(pin.parentPin)) && !removedNeedZones.has(String(pin.id));
+    }),
     ...edits.groups,
-    ...edits.needZones,
+    ...edits.needZones.filter((zone) => !removedGroups.has(String(zone.parentPin))),
   ];
 }
 
@@ -292,7 +353,7 @@ function restoreView() {
   const saved = readStorage(STORAGE.view, null);
   const config = state.data.map.config;
   if (saved && Array.isArray(saved.center) && Number.isFinite(saved.zoom)) {
-    state.zoom = clamp(saved.zoom, config.minZoom, config.maxZoom);
+    state.zoom = roundZoom(clamp(saved.zoom, config.minZoom, config.maxZoom));
     state.center = clampCenter(saved.center, state.zoom);
   } else {
     state.center = config.center;
@@ -404,6 +465,8 @@ function bindEvents() {
   els.hideAll.addEventListener("click", () => setAllGroups(false));
   els.saveFilters.addEventListener("click", saveFilters);
   els.loadFilters.addEventListener("click", loadFilters);
+  els.saveView.addEventListener("click", saveView);
+  els.loadView.addEventListener("click", loadView);
   els.hideCompleted.addEventListener("click", () => {
     state.hideCompleted = !state.hideCompleted;
     els.hideCompleted.setAttribute("aria-pressed", String(state.hideCompleted));
@@ -414,12 +477,13 @@ function bindEvents() {
     els.showNeedZones.setAttribute("aria-pressed", String(state.showNeedZones));
     renderMarkers();
   });
-  els.zoomIn.addEventListener("click", () => setZoom(state.zoom + 1));
-  els.zoomOut.addEventListener("click", () => setZoom(state.zoom - 1));
+  els.zoomIn.addEventListener("click", () => changeZoomBy(state.settings.zoomStep));
+  els.zoomOut.addEventListener("click", () => changeZoomBy(-state.settings.zoomStep));
   els.zoomLock.addEventListener("click", toggleZoomLock);
   els.resetView.addEventListener("click", resetView);
   els.addPin.addEventListener("click", toggleAddPin);
   els.editAnimalGroups.addEventListener("click", beginAnimalGroupEditing);
+  els.ageAllAnimals.addEventListener("click", ageAllAnimalPopulations);
   els.addAnimalGroup.addEventListener("click", beginAnimalGroupPlacement);
   els.saveAnimalGroups.addEventListener("click", saveAnimalGroupChanges);
   els.map.addEventListener("pointerdown", startDrag);
@@ -429,7 +493,7 @@ function bindEvents() {
   els.map.addEventListener("wheel", onWheel, { passive: false });
   els.map.addEventListener("dblclick", (event) => {
     event.preventDefault();
-    setZoom(state.zoom + 1, { clientX: event.clientX, clientY: event.clientY });
+    changeZoomBy(state.settings.zoomStep);
   });
   els.map.addEventListener("mousemove", updateCoordinateReadout);
   els.map.addEventListener("keydown", onMapKeydown);
@@ -467,6 +531,150 @@ function bindEvents() {
   for (const button of els.needZoneDialog.querySelectorAll(".cancel-need-zone")) {
     button.addEventListener("click", cancelAnimalPlacement);
   }
+  els.openSettings.addEventListener("click", openSettings);
+  for (const button of els.settingsDialog.querySelectorAll(".close-settings")) {
+    button.addEventListener("click", () => els.settingsDialog.close());
+  }
+  els.zoomStep.addEventListener("change", updateSettingsFromControls);
+  els.centerZoomOnSelected.addEventListener("change", updateSettingsFromControls);
+  els.iconFadeOpacity.addEventListener("input", updateSettingsFromControls);
+  els.deletePopulations.addEventListener("click", deleteAllPopulationData);
+  els.resetNeedZones.addEventListener("click", resetAllNeedZones);
+  els.deleteNeedZones.addEventListener("click", deleteAllNeedZones);
+  els.loadDefaultNeedZones.addEventListener("click", loadDefaultNeedZones);
+  els.resetCompleted.addEventListener("click", resetAllCompleted);
+  els.saveItemForm.addEventListener("submit", confirmSaveItem);
+  els.loadItemForm.addEventListener("submit", applySelectedSavedItem);
+  els.loadItemList.addEventListener("change", () => {
+    els.applySavedItem.disabled = !els.loadItemForm.elements.namedItem("saved-item")?.value;
+  });
+  for (const button of document.querySelectorAll(".close-save-item")) {
+    button.addEventListener("click", () => els.saveItemDialog.close());
+  }
+  for (const button of document.querySelectorAll(".close-load-item")) {
+    button.addEventListener("click", () => els.loadItemDialog.close());
+  }
+  els.settingsDialog.addEventListener("click", deleteSavedItemFromSettings);
+}
+
+function openSettings() {
+  if (state.editingAnimalGroups) return;
+  syncSettingsControls();
+  renderSavedItemsSettings();
+  els.settingsStatus.textContent = "";
+  els.settingsDialog.showModal();
+}
+
+function syncSettingsControls() {
+  els.zoomStep.value = String(state.settings.zoomStep);
+  els.centerZoomOnSelected.checked = state.settings.centerZoomOnSelected;
+  els.iconFadeOpacity.value = String(state.settings.iconFadeOpacity);
+  applyIconFadeOpacity();
+}
+
+function updateSettingsFromControls() {
+  state.settings = normalizeSettings({
+    zoomStep: Number(els.zoomStep.value),
+    centerZoomOnSelected: els.centerZoomOnSelected.checked,
+    iconFadeOpacity: Number(els.iconFadeOpacity.value),
+  });
+  saveStorage(STORAGE.settings, state.settings);
+  applyIconFadeOpacity();
+  els.settingsStatus.textContent = "Preferences saved";
+}
+
+function applyIconFadeOpacity() {
+  document.documentElement.style.setProperty("--icon-fade-opacity", String(state.settings.iconFadeOpacity));
+  els.iconFadeValue.textContent = `${Math.round(state.settings.iconFadeOpacity * 100)}%`;
+}
+
+function confirmSettingAction(message) {
+  return window.confirm(message);
+}
+
+function deleteAllPopulationData() {
+  if (!confirmSettingAction("Delete all animal population data? This cannot be undone.")) return;
+  state.populations = {};
+  saveStorage(STORAGE.populations, state.populations);
+  renderMarkers();
+  setSettingsStatus("All animal population data deleted");
+}
+
+function resetAllNeedZones() {
+  const zones = getMapPins().filter((pin) => pin.parentPin !== null && pin.parentPin !== undefined);
+  state.needZoneVisits = Object.fromEntries(zones.map((zone) => [zone.id, "rarely"]));
+  saveStorage(STORAGE.needZoneVisits, state.needZoneVisits);
+  renderMarkers();
+  setSettingsStatus(`${zones.length.toLocaleString()} need zones set to Rarely`);
+}
+
+function deleteAllNeedZones() {
+  if (!confirmSettingAction("Delete all need zones from every animal group? You can restore the shipped zones with Load default need zones.")) return;
+  ensureDefaultNeedZoneSnapshot();
+  const allZones = getAllStoredNeedZones();
+  const builtInZoneIds = state.data.pins
+    .filter((pin) => pin.parentPin !== null && pin.parentPin !== undefined)
+    .map((pin) => pin.id);
+  state.animalGroupEdits.needZones = [];
+  state.animalGroupEdits.removedNeedZoneIds = builtInZoneIds;
+  clearNeedZoneData(allZones.map((zone) => zone.id));
+  saveStorage(STORAGE.animalGroupEdits, state.animalGroupEdits);
+  closeCard();
+  rebuildPinIndexes();
+  renderMarkers();
+  setSettingsStatus(`${allZones.length.toLocaleString()} need zones deleted`);
+}
+
+function loadDefaultNeedZones() {
+  ensureDefaultNeedZoneSnapshot();
+  if (!confirmSettingAction("Replace the current need zones with the saved default set?")) return;
+  const existingZones = getAllStoredNeedZones();
+  const builtInIds = new Set(state.data.pins
+    .filter((pin) => pin.parentPin !== null && pin.parentPin !== undefined)
+    .map((pin) => String(pin.id)));
+  const snapshotIds = new Set(state.defaultNeedZones.map((zone) => String(zone.id)));
+  state.animalGroupEdits.needZones = state.defaultNeedZones
+    .filter((zone) => !builtInIds.has(String(zone.id)))
+    .map((zone) => JSON.parse(JSON.stringify(zone)));
+  state.animalGroupEdits.removedNeedZoneIds = [...builtInIds]
+    .filter((id) => !snapshotIds.has(id));
+  clearNeedZoneData([
+    ...existingZones.map((zone) => zone.id),
+    ...state.defaultNeedZones.map((zone) => zone.id),
+  ]);
+  saveStorage(STORAGE.animalGroupEdits, state.animalGroupEdits);
+  closeCard();
+  rebuildPinIndexes();
+  renderMarkers();
+  const restoredCount = getMapPins().filter((pin) => pin.parentPin !== null && pin.parentPin !== undefined).length;
+  setSettingsStatus(`${restoredCount.toLocaleString()} default need zones loaded`);
+}
+
+function getAllStoredNeedZones() {
+  return [...state.data.pins, ...state.animalGroupEdits.needZones]
+    .filter((pin) => pin.parentPin !== null && pin.parentPin !== undefined);
+}
+
+function clearNeedZoneData(zoneIds) {
+  for (const id of new Set(zoneIds.map(String))) {
+    delete state.needZoneVisits[id];
+    delete state.pinLocations[id];
+  }
+  saveStorage(STORAGE.needZoneVisits, state.needZoneVisits);
+  saveStorage(STORAGE.pinLocations, state.pinLocations);
+}
+
+function resetAllCompleted() {
+  if (state.completed.size && !confirmSettingAction("Mark every completed item as not completed?")) return;
+  state.completed.clear();
+  saveStorage(STORAGE.completed, []);
+  updateProgress();
+  renderMarkers();
+  setSettingsStatus("All completed items reset");
+}
+
+function setSettingsStatus(message) {
+  els.settingsStatus.textContent = message;
 }
 
 function cloneAnimalGroupEdits(edits) {
@@ -479,6 +687,7 @@ function beginAnimalGroupEditing() {
   closeCard();
   state.editingAnimalGroups = true;
   state.animalGroupDraft = cloneAnimalGroupEdits(state.animalGroupEdits);
+  state.animalEditRemovedPinIds.clear();
   rebuildPinIndexes();
   updateAnimalEditControls();
   renderMarkers();
@@ -488,6 +697,7 @@ function updateAnimalEditControls() {
   els.editAnimalGroups.hidden = state.editingAnimalGroups;
   els.animalEditActions.hidden = !state.editingAnimalGroups;
   els.addPin.disabled = state.editingAnimalGroups;
+  els.openSettings.disabled = state.editingAnimalGroups;
   els.map.classList.toggle("is-editing-animals", state.editingAnimalGroups);
   updateMapInteractionHint();
 }
@@ -515,7 +725,7 @@ function updateMapInteractionHint() {
   } else if (state.addingPin) {
     els.mapHint.textContent = "Click the map to place your pin · Esc to cancel";
   } else if (state.editingAnimalGroups) {
-    els.mapHint.textContent = "Select an animal group or need zone to edit · Save Changes when finished";
+    els.mapHint.textContent = "Select any map icon to edit or remove · Save Changes when finished";
   } else {
     els.mapHint.textContent = "Drag to explore · Scroll to zoom";
   }
@@ -636,6 +846,7 @@ function cancelAnimalPlacement() {
 function removeNeedZone(zone) {
   if (!state.editingAnimalGroups || !zone.parentPin) return;
   const edits = state.animalGroupDraft;
+  state.animalEditRemovedPinIds.add(String(zone.id));
   const customIndex = edits.needZones.findIndex((item) => item.id === zone.id);
   if (customIndex >= 0) {
     edits.needZones.splice(customIndex, 1);
@@ -647,17 +858,81 @@ function removeNeedZone(zone) {
   renderMarkers();
 }
 
+function removeAnimalGroup(pin) {
+  if (!state.editingAnimalGroups || !isAnimalPin(pin) || pin.parentPin) return;
+  const edits = state.animalGroupDraft;
+  state.animalEditRemovedPinIds.add(String(pin.id));
+  for (const candidate of [...state.data.pins, ...edits.needZones]) {
+    if (String(candidate.parentPin) === String(pin.id)) {
+      state.animalEditRemovedPinIds.add(String(candidate.id));
+    }
+  }
+  const customIndex = edits.groups.findIndex((item) => String(item.id) === String(pin.id));
+  if (customIndex >= 0) {
+    edits.groups.splice(customIndex, 1);
+  } else if (!edits.removedGroupIds.map(String).includes(String(pin.id))) {
+    edits.removedGroupIds.push(pin.id);
+  }
+
+  // Custom zones must be removed from the draft. Built-in zones disappear
+  // automatically because getMapPins excludes every child of a removed group.
+  edits.needZones = edits.needZones.filter((zone) => String(zone.parentPin) !== String(pin.id));
+  state.expandedAnimalId = null;
+  closeCard();
+  rebuildPinIndexes();
+  renderMarkers();
+}
+
+function removeMapPin(pin) {
+  if (!state.editingAnimalGroups || isAnimalPin(pin) || pin.parentPin) return;
+  const edits = state.animalGroupDraft;
+  state.animalEditRemovedPinIds.add(String(pin.id));
+  if (!edits.removedPinIds.map(String).includes(String(pin.id))) {
+    edits.removedPinIds.push(pin.id);
+  }
+  closeCard();
+  rebuildPinIndexes();
+  renderMarkers();
+}
+
 function saveAnimalGroupChanges() {
   if (!state.editingAnimalGroups) return;
   cancelAnimalPlacement();
+  const previousPinIds = new Set(getMapPins(state.animalGroupEdits).map((pin) => String(pin.id)));
   state.animalGroupEdits = cloneAnimalGroupEdits(state.animalGroupDraft);
   saveStorage(STORAGE.animalGroupEdits, state.animalGroupEdits);
+  const nextPinIds = new Set(getMapPins(state.animalGroupEdits).map((pin) => String(pin.id)));
+  const removedPinIds = new Set([
+    ...state.animalEditRemovedPinIds,
+    ...[...previousPinIds].filter((id) => !nextPinIds.has(id)),
+  ]);
+  removeSavedPinData([...removedPinIds].filter((id) => !nextPinIds.has(id)));
+  state.animalEditRemovedPinIds.clear();
   state.animalGroupDraft = null;
   state.editingAnimalGroups = false;
   closeCard();
   rebuildPinIndexes();
   updateAnimalEditControls();
+  updateProgress();
   renderMarkers();
+}
+
+function removeSavedPinData(pinIds) {
+  if (!pinIds.length) return;
+  for (const id of pinIds) {
+    delete state.animalDescriptions[id];
+    delete state.populations[id];
+    delete state.needZoneVisits[id];
+    delete state.pinLocations[id];
+    for (const completedId of state.completed) {
+      if (String(completedId) === String(id)) state.completed.delete(completedId);
+    }
+  }
+  saveStorage(STORAGE.animalDescriptions, state.animalDescriptions);
+  saveStorage(STORAGE.populations, state.populations);
+  saveStorage(STORAGE.needZoneVisits, state.needZoneVisits);
+  saveStorage(STORAGE.pinLocations, state.pinLocations);
+  saveStorage(STORAGE.completed, [...state.completed]);
 }
 
 function clearAnimalFilters() {
@@ -676,8 +951,8 @@ function clearAnimalFilters() {
   renderMarkers();
 }
 
-function saveFilters() {
-  const snapshot = {
+function captureFilterSnapshot() {
+  return {
     version: 1,
     visibleGroups: [...state.visibleGroups],
     query: state.query,
@@ -693,15 +968,139 @@ function saveFilters() {
       age: els.ageFilter.value,
     },
   };
-  saveStorage(STORAGE.savedFilters, snapshot);
-  updateSavedFilterControls("Filters saved");
+}
+
+function saveFilters() {
+  openSaveItemDialog("filter");
 }
 
 function loadFilters() {
-  const snapshot = readStorage(STORAGE.savedFilters, null);
-  if (!snapshot || !Array.isArray(snapshot.visibleGroups)) {
-    updateSavedFilterControls("No saved filters found");
+  openLoadItemDialog("filter");
+}
+
+function saveView() {
+  openSaveItemDialog("view");
+}
+
+function loadView() {
+  openLoadItemDialog("view");
+}
+
+function openSaveItemDialog(kind) {
+  state.savedItemDialogKind = kind;
+  const isView = kind === "view";
+  els.saveItemEyebrow.textContent = isView ? "Saved views" : "Saved filters";
+  els.saveItemTitle.textContent = isView ? "Save view" : "Save filters";
+  els.saveItemHelp.textContent = isView
+    ? "Save the current map center, zoom level, and filter settings."
+    : "Save the current filter settings for later.";
+  els.confirmSaveItem.textContent = isView ? "Save view" : "Save filters";
+  els.saveItemName.placeholder = isView ? "e.g. Northern Hunting Grounds" : "e.g. Big Game";
+  els.saveItemForm.reset();
+  els.saveItemDialog.showModal();
+  requestAnimationFrame(() => els.saveItemName.focus());
+}
+
+function confirmSaveItem(event) {
+  event.preventDefault();
+  const name = els.saveItemName.value.trim();
+  if (!name) {
+    els.saveItemName.focus();
     return;
+  }
+
+  const kind = state.savedItemDialogKind;
+  if (kind === "view" && state.zoomAnimationFinish) state.zoomAnimationFinish();
+  const snapshot = kind === "view"
+    ? {
+        version: 1,
+        center: [...state.center],
+        zoom: state.zoom,
+        filters: captureFilterSnapshot(),
+      }
+    : captureFilterSnapshot();
+  getSavedItems(kind).push({
+    id: createSavedItemId(kind),
+    name: name.slice(0, 60),
+    createdAt: new Date().toISOString(),
+    snapshot,
+  });
+  persistSavedItems(kind);
+  els.saveItemDialog.close();
+  renderSavedItemsSettings();
+  updateSavedItemControls(`${kind === "view" ? "View" : "Filters"} “${name.slice(0, 60)}” saved`);
+}
+
+function openLoadItemDialog(kind) {
+  const items = getSavedItems(kind);
+  if (!items.length) {
+    updateSavedItemControls(`No saved ${kind === "view" ? "views" : "filters"} found`);
+    return;
+  }
+  state.savedItemDialogKind = kind;
+  const isView = kind === "view";
+  els.loadItemEyebrow.textContent = isView ? "Saved views" : "Saved filters";
+  els.loadItemTitle.textContent = isView ? "Load view" : "Load filters";
+  els.loadItemLegend.textContent = isView ? "Choose a saved view" : "Choose saved filters";
+  renderLoadItemList(kind);
+  els.loadItemDialog.showModal();
+}
+
+function renderLoadItemList(kind) {
+  const items = getSavedItems(kind);
+  if (!items.length) {
+    els.loadItemList.innerHTML = `<p class="saved-item-empty">No saved ${kind === "view" ? "views" : "filters"}.</p>`;
+    els.applySavedItem.disabled = true;
+    return;
+  }
+  els.loadItemList.innerHTML = items.map((item, index) => {
+    const meta = kind === "view" ? formatViewMeta(item.snapshot) : "Filter set";
+    return `<label class="saved-item-option">
+      <input type="radio" name="saved-item" value="${escapeHtml(item.id)}" ${index === 0 ? "checked" : ""}>
+      <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(meta)}</small></span>
+    </label>`;
+  }).join("");
+  els.applySavedItem.disabled = false;
+}
+
+function applySelectedSavedItem(event) {
+  event.preventDefault();
+  const kind = state.savedItemDialogKind;
+  const selectedId = els.loadItemForm.elements.namedItem("saved-item")?.value;
+  const item = getSavedItems(kind).find((candidate) => candidate.id === selectedId);
+  if (!item) return;
+
+  const applied = kind === "view"
+    ? applySavedView(item.snapshot)
+    : applyFilterSnapshot(item.snapshot);
+  if (!applied) {
+    updateSavedItemControls(`Could not load “${item.name}”`);
+    return;
+  }
+  els.loadItemDialog.close();
+  updateSavedItemControls(`${kind === "view" ? "View" : "Filters"} “${item.name}” loaded`);
+}
+
+function applySavedView(snapshot) {
+  const config = state.data.map.config;
+  if (!snapshot || !Array.isArray(snapshot.center) || snapshot.center.length < 2
+      || !Array.isArray(snapshot.filters?.visibleGroups)) return false;
+  const center = snapshot.center.map(Number);
+  const zoom = Number(snapshot.zoom);
+  if (!center.every(Number.isFinite) || !Number.isFinite(zoom)) return false;
+
+  if (state.zoomAnimationFinish) state.zoomAnimationFinish();
+  state.zoom = roundZoom(clamp(zoom, config.minZoom, config.maxZoom));
+  state.center = clampCenter(center, state.zoom);
+  applyFilterSnapshot(snapshot.filters, { render: false });
+  closeCard();
+  render();
+  return true;
+}
+
+function applyFilterSnapshot(snapshot, { render = true } = {}) {
+  if (!snapshot || !Array.isArray(snapshot.visibleGroups)) {
+    return false;
   }
 
   const availableGroups = new Set(
@@ -745,8 +1144,8 @@ function loadFilters() {
     state.animalFilters.stars.size || els.fitnessFilter.value || els.countFilter.value || els.ageFilter.value,
   );
   closeCard();
-  renderMarkers();
-  updateSavedFilterControls("Filters loaded");
+  if (render) renderMarkers();
+  return true;
 }
 
 function normalizeSavedFilterValue(value, min, max) {
@@ -759,17 +1158,96 @@ function normalizeSavedComparison(value) {
   return ["lt", "lte", "eq", "gte", "gt"].includes(value) ? value : "lt";
 }
 
-function updateSavedFilterControls(message = "") {
-  const hasSavedFilters = Boolean(readStorage(STORAGE.savedFilters, null));
+function updateSavedItemControls(message = "") {
+  const hasSavedFilters = state.savedFilters.length > 0;
+  const hasSavedViews = state.savedViews.length > 0;
   els.loadFilters.disabled = !hasSavedFilters;
-  els.loadFilters.title = hasSavedFilters ? "Restore the saved filter configuration" : "No saved filters available";
+  els.loadFilters.title = hasSavedFilters ? "Choose and apply saved filters" : "No saved filters available";
+  els.loadView.disabled = !hasSavedViews;
+  els.loadView.title = hasSavedViews ? "Choose and apply a saved map view" : "No saved views available";
   els.filterSaveStatus.textContent = message;
+}
+
+function normalizeSavedCollection(value, kind) {
+  let items = [];
+  if (Array.isArray(value)) items = value;
+  else if (Array.isArray(value?.items)) items = value.items;
+  else if (kind === "filter" && Array.isArray(value?.visibleGroups)) {
+    items = [{ id: "legacy-filter", name: "Saved filter", createdAt: "", snapshot: value }];
+  }
+
+  return items.flatMap((item, index) => {
+    const snapshot = item?.snapshot || item?.filters || null;
+    if (!snapshot || typeof snapshot !== "object") return [];
+    const defaultName = kind === "view" ? `Saved view ${index + 1}` : `Saved filter ${index + 1}`;
+    return [{
+      id: String(item.id || `${kind}-${index}-${Date.now()}`),
+      name: String(item.name || defaultName).trim().slice(0, 60) || defaultName,
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : "",
+      snapshot,
+    }];
+  });
+}
+
+function getSavedItems(kind) {
+  return kind === "view" ? state.savedViews : state.savedFilters;
+}
+
+function persistSavedItems(kind) {
+  const key = kind === "view" ? STORAGE.savedViews : STORAGE.savedFilters;
+  saveStorage(key, { version: 2, items: getSavedItems(kind) });
+}
+
+function createSavedItemId(kind) {
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+  return `${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function formatViewMeta(snapshot) {
+  const center = Array.isArray(snapshot?.center) ? snapshot.center.map(Number) : [];
+  const zoom = Number(snapshot?.zoom);
+  if (center.length < 2 || !center.every(Number.isFinite) || !Number.isFinite(zoom)) return "Map view";
+  return `${center[1].toFixed(3)}, ${center[0].toFixed(3)} · Zoom ${formatZoom(zoom)}`;
+}
+
+function renderSavedItemsSettings() {
+  if (!els.settingsSavedFilters || !els.settingsSavedViews) return;
+  renderSettingsSavedList(els.settingsSavedFilters, "filter");
+  renderSettingsSavedList(els.settingsSavedViews, "view");
+}
+
+function renderSettingsSavedList(container, kind) {
+  const items = getSavedItems(kind);
+  if (!items.length) {
+    container.innerHTML = `<p class="saved-item-empty">No saved ${kind === "view" ? "views" : "filters"}.</p>`;
+    return;
+  }
+  container.innerHTML = items.map((item) => `<div class="settings-saved-row">
+    <span title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span>
+    <button type="button" data-delete-saved-kind="${kind}" data-delete-saved-id="${escapeHtml(item.id)}" aria-label="Delete ${escapeHtml(item.name)}" title="Delete">×</button>
+  </div>`).join("");
+}
+
+function deleteSavedItemFromSettings(event) {
+  const button = event.target.closest("[data-delete-saved-kind]");
+  if (!button) return;
+  const kind = button.dataset.deleteSavedKind;
+  const items = getSavedItems(kind);
+  const index = items.findIndex((item) => item.id === button.dataset.deleteSavedId);
+  if (index < 0) return;
+  const [item] = items.slice(index, index + 1);
+  if (!confirmSettingAction(`Delete ${kind === "view" ? "view" : "filter"} “${item.name}”?`)) return;
+  items.splice(index, 1);
+  persistSavedItems(kind);
+  renderSavedItemsSettings();
+  updateSavedItemControls();
+  setSettingsStatus(`${kind === "view" ? "View" : "Filter"} “${item.name}” deleted`);
 }
 
 function render() {
   renderTiles();
   renderMarkers();
-  els.zoomLevel.textContent = state.zoom;
+  els.zoomLevel.textContent = formatZoom(state.zoom);
   els.zoomLock.setAttribute("aria-pressed", String(state.zoomLocked));
   els.zoomLock.classList.toggle("active", state.zoomLocked);
   els.zoomIn.disabled = state.zoomAnimating || state.zoomLocked || state.zoom >= state.data.map.config.maxZoom;
@@ -779,8 +1257,31 @@ function render() {
 
 function renderTiles() {
   const rect = els.map.getBoundingClientRect();
-  const nativeMax = state.data.map.config.nativeMaxZoom;
-  const nativeZoom = Math.min(state.zoom, nativeMax);
+  const nativeZoom = getTileSourceZoom(state.zoom);
+  let tileSet = [...els.tiles.children].find((element) => Number(element.dataset.zoom) === nativeZoom);
+  const activeTileSet = els.tiles.querySelector(".tile-set.is-active");
+
+  if (!tileSet) {
+    tileSet = document.createElement("div");
+    tileSet.className = "tile-set";
+    tileSet.dataset.zoom = String(nativeZoom);
+    els.tiles.append(tileSet);
+  }
+
+  reconcileTileSet(tileSet, nativeZoom, rect);
+
+  // Keep the outgoing imagery aligned with the new fractional zoom until the
+  // incoming source level is decoded. This prevents a blank flash at integer
+  // boundaries, where every tile URL changes at once.
+  if (activeTileSet && activeTileSet !== tileSet) {
+    reconcileTileSet(activeTileSet, Number(activeTileSet.dataset.zoom), rect);
+    activateTileSetWhenReady(tileSet);
+  } else if (!activeTileSet) {
+    tileSet.classList.add("is-active");
+  }
+}
+
+function reconcileTileSet(tileSet, nativeZoom, rect) {
   const overzoom = 2 ** (state.zoom - nativeZoom);
   const tileDisplaySize = TILE_SIZE * overzoom;
   const dimension = 2 ** nativeZoom;
@@ -792,26 +1293,53 @@ function renderTiles() {
   const maxX = clamp(Math.floor((left + rect.width) / tileDisplaySize) + tileBuffer, 0, dimension - 1);
   const minY = clamp(Math.floor(top / tileDisplaySize) - tileBuffer, 0, dimension - 1);
   const maxY = clamp(Math.floor((top + rect.height) / tileDisplaySize) + tileBuffer, 0, dimension - 1);
-  const fragment = document.createDocumentFragment();
+  const desiredTiles = new Set();
+  const existingTiles = new Map([...tileSet.children].map((image) => [image.dataset.key, image]));
 
   for (let x = minX; x <= maxX; x++) {
     for (let y = minY; y <= maxY; y++) {
-      const image = new Image();
-      image.className = "tile";
-      image.alt = "";
-      image.draggable = false;
+      const key = `${x}/${y}`;
+      desiredTiles.add(key);
+      let image = existingTiles.get(key);
+      if (!image) {
+        image = new Image();
+        image.className = "tile";
+        image.alt = "";
+        image.draggable = false;
+        image.dataset.key = key;
+        image.addEventListener("load", () => activateTileSetWhenReady(tileSet), { once: true });
+        image.addEventListener("error", () => activateTileSetWhenReady(tileSet), { once: true });
+        tileSet.append(image);
+      }
       // The source pyramid uses the TMS convention (Y increases northward),
       // while screen/world tile rows increase southward.
       const sourceY = dimension - 1 - y;
-      image.src = `assets/tiles/${nativeZoom}/${x}/${sourceY}.png`;
+      if (!image.src) image.src = `assets/tiles/${nativeZoom}/${x}/${sourceY}.png`;
       image.style.left = `${x * tileDisplaySize - left}px`;
       image.style.top = `${y * tileDisplaySize - top}px`;
       image.style.width = `${tileDisplaySize + 0.5}px`;
       image.style.height = `${tileDisplaySize + 0.5}px`;
-      fragment.append(image);
     }
   }
-  els.tiles.replaceChildren(fragment);
+
+  for (const [key, image] of existingTiles) {
+    if (!desiredTiles.has(key)) image.remove();
+  }
+}
+
+function activateTileSetWhenReady(tileSet) {
+  if (!tileSet.isConnected || tileSet.classList.contains("is-active")) return;
+  if (Number(tileSet.dataset.zoom) !== getTileSourceZoom(state.zoom)) return;
+  if ([...tileSet.children].some((image) => !image.complete)) return;
+
+  for (const activeTileSet of els.tiles.querySelectorAll(".tile-set.is-active")) {
+    activeTileSet.classList.remove("is-active");
+  }
+  tileSet.classList.add("is-active");
+}
+
+function getTileSourceZoom(zoom) {
+  return Math.min(Math.floor(zoom + Number.EPSILON), state.data.map.config.nativeMaxZoom);
 }
 
 function renderMarkers({ refreshCard = true } = {}) {
@@ -943,7 +1471,9 @@ function openPinCard(pin) {
   const actions = [
     relocatable && !relocating ? `<button class="relocate-button">Relocate</button>` : "",
     animal && state.editingAnimalGroups ? `<button class="add-need-zone-button">Add Need Zone</button>` : "",
+    animal && state.editingAnimalGroups ? `<button class="remove-animal-group-button delete-button" title="Remove this animal group and all of its need zones">Remove Animal Group</button>` : "",
     zone && state.editingAnimalGroups ? `<button class="remove-need-zone-button delete-button">Remove Need Zone</button>` : "",
+    !animal && !zone && state.editingAnimalGroups ? `<button class="remove-map-pin-button delete-button" title="Remove this icon from the map">Remove Map Icon</button>` : "",
     infrastructure
       ? `<button class="complete-button ${complete ? "active" : ""}">${complete ? "✓ Completed" : "Mark completed"}</button>`
       : "",
@@ -972,7 +1502,9 @@ function openPinCard(pin) {
   els.pinCard.querySelector(".complete-button")?.addEventListener("click", () => toggleCompleted(pin.id));
   els.pinCard.querySelector(".relocate-button")?.addEventListener("click", () => beginRelocation(pin));
   els.pinCard.querySelector(".add-need-zone-button")?.addEventListener("click", () => beginNeedZonePlacement(pin));
+  els.pinCard.querySelector(".remove-animal-group-button")?.addEventListener("click", () => removeAnimalGroup(pin));
   els.pinCard.querySelector(".remove-need-zone-button")?.addEventListener("click", () => removeNeedZone(pin));
+  els.pinCard.querySelector(".remove-map-pin-button")?.addEventListener("click", () => removeMapPin(pin));
   els.pinCard.querySelector(".save-relocation")?.addEventListener("click", () => saveRelocation(pin));
   els.pinCard.querySelector(".cancel-relocation")?.addEventListener("click", () => cancelRelocation(pin));
   const descriptionInput = els.pinCard.querySelector(".animal-description-editor textarea");
@@ -1247,6 +1779,64 @@ function incrementPopulationAge(pin, group) {
   renderMarkers();
 }
 
+function ageAllAnimalPopulations() {
+  let agedCount = 0;
+  let removedCount = 0;
+
+  for (const [pinId, storedPopulation] of Object.entries(state.populations)) {
+    if (!Array.isArray(storedPopulation) || !storedPopulation.length) continue;
+    const numericPinId = Number(pinId);
+    const pin = pinById.get(pinId)
+      || (Number.isFinite(numericPinId) ? pinById.get(numericPinId) : null);
+    const group = pin ? groupById.get(pin.group) : null;
+    const maxAge = group ? getAnimalMaxAge(group.title) : null;
+    const result = agePopulationMembers(storedPopulation, maxAge);
+    state.populations[pinId] = result.population;
+    agedCount += result.agedCount;
+    removedCount += result.removedCount;
+  }
+
+  if (!agedCount && !removedCount) {
+    showMapActionStatus("No recorded animals to age.");
+    return;
+  }
+
+  saveStorage(STORAGE.populations, state.populations);
+  renderMarkers();
+  const agedLabel = `${agedCount.toLocaleString()} ${agedCount === 1 ? "animal" : "animals"} aged by 1`;
+  const removedLabel = `${removedCount.toLocaleString()} removed at maximum age`;
+  showMapActionStatus(removedCount ? `${agedLabel}; ${removedLabel}.` : `${agedLabel}.`);
+}
+
+function agePopulationMembers(population, maxAge) {
+  const nextPopulation = [];
+  let removedCount = 0;
+  for (const member of population) {
+    const savedAge = Number(member.age);
+    const currentAge = Number.isFinite(savedAge) ? savedAge : 0;
+    if (maxAge !== null && currentAge >= maxAge) {
+      removedCount += 1;
+      continue;
+    }
+    nextPopulation.push({ ...member, age: currentAge + 1 });
+  }
+  return {
+    population: nextPopulation,
+    agedCount: nextPopulation.length,
+    removedCount,
+  };
+}
+
+function showMapActionStatus(message) {
+  clearTimeout(state.mapActionStatusTimer);
+  els.mapActionStatus.textContent = message;
+  els.mapActionStatus.hidden = false;
+  state.mapActionStatusTimer = setTimeout(() => {
+    els.mapActionStatus.hidden = true;
+    state.mapActionStatusTimer = null;
+  }, 5000);
+}
+
 function renderNeedZoneFrequency(zone) {
   const current = state.needZoneVisits[zone.id] || "";
   return `
@@ -1393,7 +1983,7 @@ function toggleCompleted(id) {
 }
 
 function updateProgress() {
-  const infrastructurePins = state.data.pins.filter(isInfrastructurePin);
+  const infrastructurePins = getMapPins().filter(isInfrastructurePin);
   const completed = infrastructurePins.filter((pin) => state.completed.has(pin.id)).length;
   const total = infrastructurePins.length;
   els.progressText.textContent = `${completed.toLocaleString()} / ${total.toLocaleString()}`;
@@ -1416,33 +2006,21 @@ function toggleZoomLock() {
   render();
 }
 
-function setZoom(next, anchor = null) {
+function changeZoomBy(delta) {
+  setZoom(roundZoom(state.zoom + delta));
+}
+
+function setZoom(next) {
   if (state.zoomLocked || state.zoomAnimating) return;
   const config = state.data.map.config;
-  const zoom = clamp(next, config.minZoom, config.maxZoom);
+  const zoom = roundZoom(clamp(next, config.minZoom, config.maxZoom));
   if (zoom === state.zoom) return;
-  const selectedAnimal = getSelectedAnimalPin();
+  const selectedLocation = state.settings.centerZoomOnSelected ? getSelectedPinLocation() : null;
   let nextCenter = [...state.center];
 
-  if (selectedAnimal) {
-    nextCenter = [...getPinLocation(selectedAnimal)];
-  } else if (anchor) {
-    const rect = els.map.getBoundingClientRect();
-    const offsetX = anchor.clientX - rect.left - rect.width / 2;
-    const offsetY = anchor.clientY - rect.top - rect.height / 2;
-    const centerPx = lonLatToWorld(state.center[0], state.center[1], state.zoom);
-    const scale = 2 ** (zoom - state.zoom);
-    const anchoredCenter = worldToLonLat(
-      (centerPx.x + offsetX) * scale - offsetX,
-      (centerPx.y + offsetY) * scale - offsetY,
-      zoom,
-    );
-    nextCenter = [anchoredCenter.lon, anchoredCenter.lat];
-  }
+  if (selectedLocation) nextCenter = [...selectedLocation];
 
   nextCenter = clampCenter(nextCenter, zoom);
-
-  if (!selectedAnimal) closeCard();
   animateZoomTo(zoom, nextCenter);
 }
 
@@ -1457,12 +2035,13 @@ function animateZoomTo(targetZoom, targetCenter) {
   let finished = false;
 
   state.zoomAnimating = true;
-  els.zoomLevel.textContent = targetZoom;
+  els.zoomLevel.textContent = formatZoom(targetZoom);
   els.zoomIn.disabled = true;
   els.zoomOut.disabled = true;
   els.mapStage.classList.add("is-zoom-animating");
   els.mapStage.style.transformOrigin = "0 0";
   els.mapStage.style.transform = "translate3d(0,0,0) scale(1)";
+  els.markers.style.setProperty("--zoom-marker-scale", "1");
 
   const finish = () => {
     if (finished) return;
@@ -1472,10 +2051,12 @@ function animateZoomTo(targetZoom, targetCenter) {
     els.mapStage.classList.remove("is-zoom-animating");
     els.mapStage.style.transform = "";
     els.mapStage.style.transformOrigin = "";
+    els.markers.style.removeProperty("--zoom-marker-scale");
     state.zoom = targetZoom;
     state.center = targetCenter;
     state.zoomAnimating = false;
     state.zoomAnimationTimer = null;
+    state.zoomAnimationFinish = null;
     render();
   };
   const onTransitionEnd = (event) => {
@@ -1483,9 +2064,13 @@ function animateZoomTo(targetZoom, targetCenter) {
   };
 
   els.mapStage.addEventListener("transitionend", onTransitionEnd);
+  state.zoomAnimationFinish = finish;
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      if (state.zoomAnimating) els.mapStage.style.transform = targetTransform;
+      if (state.zoomAnimating) {
+        els.mapStage.style.transform = targetTransform;
+        els.markers.style.setProperty("--zoom-marker-scale", String(1 / scale));
+      }
     });
   });
   state.zoomAnimationTimer = setTimeout(finish, ZOOM_ANIMATION_MS + 120);
@@ -1495,6 +2080,18 @@ function getSelectedAnimalPin() {
   if (state.selected?.type !== "source") return null;
   const pin = pinById.get(state.selected.id);
   return pin && isAnimalPin(pin) ? pin : null;
+}
+
+function getSelectedPinLocation() {
+  if (state.selected?.type === "source") {
+    const pin = pinById.get(state.selected.id);
+    return pin ? getPinLocation(pin) : null;
+  }
+  if (state.selected?.type === "custom") {
+    const pin = state.customPins.find((candidate) => candidate.id === state.selected.id);
+    return pin ? [pin.lon, pin.lat] : null;
+  }
+  return null;
 }
 
 function resetView() {
@@ -1577,8 +2174,8 @@ function endDrag() {
 
 function onWheel(event) {
   event.preventDefault();
-  const direction = event.deltaY < 0 ? 1 : -1;
-  setZoom(state.zoom + direction, { clientX: event.clientX, clientY: event.clientY });
+  const direction = event.deltaY < 0 ? state.settings.zoomStep : -state.settings.zoomStep;
+  changeZoomBy(direction);
 }
 
 function onMapKeydown(event) {
@@ -1594,8 +2191,8 @@ function onMapKeydown(event) {
     state.center = clampCenter([next.lon, next.lat]);
     render();
   }
-  if (event.key === "+" || event.key === "=") setZoom(state.zoom + 1);
-  if (event.key === "-") setZoom(state.zoom - 1);
+  if (event.key === "+" || event.key === "=") changeZoomBy(state.settings.zoomStep);
+  if (event.key === "-") changeZoomBy(-state.settings.zoomStep);
 }
 
 function updateCoordinateReadout(event) {
@@ -1683,6 +2280,8 @@ function saveStorage(key, value) {
 }
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
+function roundZoom(value) { return Number(Number(value).toFixed(2)); }
+function formatZoom(value) { return value.toFixed(2); }
 function toCamel(value) { return value.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()); }
 function escapeHtml(value = "") { return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]); }
 function escapeAttribute(value = "") { return escapeHtml(value); }

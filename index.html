@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#111714" />
     <title>New Laurentia — Offline Map</title>
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=20260925-1" />
+    <link rel="stylesheet" href="styles.css?v=20260929-4" />
   </head>
   <body>
     <div id="app" class="app is-loading">
@@ -90,6 +90,8 @@
           <button id="hide-all" type="button">Hide all</button>
           <button id="save-filters" type="button">Save filters</button>
           <button id="load-filters" type="button" disabled>Load filters</button>
+          <button id="save-view" type="button">Save view</button>
+          <button id="load-view" type="button" disabled>Load view</button>
           <button id="hide-completed" class="toggle" type="button" aria-pressed="false">Hide completed</button>
           <button id="show-need-zones" class="toggle" type="button" aria-pressed="false">Show need zones</button>
           <p id="filter-save-status" class="filter-save-status" aria-live="polite"></p>
@@ -122,9 +124,17 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-5.2 7-12a7 7 0 1 0-14 0c0 6.8 7 12 7 12Z"/><path d="M12 6v6m-3-3h6"/></svg>
             Add pin
           </button>
-          <button id="edit-animal-groups" type="button" title="Add animal groups and manage need zones">
+          <button id="edit-animal-groups" type="button" title="Add animal groups and edit map icons">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></svg>
-            Edit Animal Groups
+            Edit Map
+          </button>
+          <button id="age-all-animals" type="button" title="Increase every recorded animal's age by one. Animals already at maximum age are removed.">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v8m-4-4h8"/><path d="M5 4v3m14-3v3M4 9h16M5 6h14a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/></svg>
+            Age Animals +1
+          </button>
+          <button id="open-settings" type="button" title="Open settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.97 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.94a1.7 1.7 0 0 0-.34-1.88L4.2 7l2.83-2.83.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 10 3.01V3h4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.03H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+            Settings
           </button>
           <div id="animal-edit-actions" class="animal-edit-actions" hidden>
             <button id="add-animal-group" type="button">
@@ -137,6 +147,8 @@
             </button>
           </div>
         </div>
+
+        <p id="map-action-status" class="map-action-status" aria-live="polite" hidden></p>
 
         <div id="map" class="map" role="application" aria-label="Interactive map of New Laurentia" tabindex="0">
           <div id="map-stage" class="map-stage">
@@ -246,6 +258,110 @@
       </form>
     </dialog>
 
-    <script src="app.js?v=20260925-1" defer></script>
+    <dialog id="save-item-dialog" class="pin-dialog saved-item-dialog">
+      <form id="save-item-form">
+        <div class="dialog-heading">
+          <div>
+            <p id="save-item-eyebrow" class="eyebrow">Saved filters</p>
+            <h2 id="save-item-title">Save filters</h2>
+          </div>
+          <button type="button" class="icon-button close-save-item" aria-label="Close">×</button>
+        </div>
+        <label>Name
+          <input id="save-item-name" type="text" required maxlength="60" autocomplete="off" placeholder="e.g. Big Game" />
+        </label>
+        <p id="save-item-help" class="dialog-help">Save the current filter settings for later.</p>
+        <div class="dialog-actions">
+          <button type="button" class="secondary close-save-item">Cancel</button>
+          <button id="confirm-save-item" type="submit" class="primary">Save filters</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="load-item-dialog" class="pin-dialog saved-item-dialog">
+      <form id="load-item-form">
+        <div class="dialog-heading">
+          <div>
+            <p id="load-item-eyebrow" class="eyebrow">Saved filters</p>
+            <h2 id="load-item-title">Load filters</h2>
+          </div>
+          <button type="button" class="icon-button close-load-item" aria-label="Close">×</button>
+        </div>
+        <fieldset>
+          <legend id="load-item-legend">Choose saved filters</legend>
+          <div id="load-item-list" class="saved-item-list"></div>
+        </fieldset>
+        <div class="dialog-actions">
+          <button type="button" class="secondary close-load-item">Cancel</button>
+          <button id="apply-saved-item" type="submit" class="primary">Apply</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="settings-dialog" class="pin-dialog settings-dialog">
+      <section class="settings-panel">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Map preferences</p>
+            <h2>Settings</h2>
+          </div>
+          <button type="button" class="icon-button close-settings" aria-label="Close settings">×</button>
+        </div>
+
+        <div class="settings-fields">
+          <label class="setting-row" for="zoom-step">
+            <span><strong>Zoom level increments</strong><small>Amount used by buttons, wheel, double-click, and keyboard.</small></span>
+            <select id="zoom-step">
+              <option value="0.1">0.1</option>
+              <option value="0.25">0.25</option>
+              <option value="0.5">0.5</option>
+              <option value="1">1</option>
+            </select>
+          </label>
+
+          <label class="setting-row toggle-setting" for="center-zoom-on-selected">
+            <span><strong>Center zoom on selected</strong><small>Focus zooming on the selected map icon.</small></span>
+            <input id="center-zoom-on-selected" type="checkbox" />
+            <span class="switch" aria-hidden="true"></span>
+          </label>
+
+          <label class="setting-row opacity-setting" for="icon-fade-opacity">
+            <span><strong>Icon fade opacity</strong><small>Opacity for unselected animal-group icons.</small></span>
+            <span class="range-control">
+              <input id="icon-fade-opacity" type="range" min="0.1" max="0.9" step="0.05" />
+              <output id="icon-fade-value" for="icon-fade-opacity">45%</output>
+            </span>
+          </label>
+        </div>
+
+        <section class="saved-items-settings" aria-label="Saved filters and views">
+          <header><strong>Saved filters &amp; views</strong><small>Delete filter sets or map views you no longer need.</small></header>
+          <div class="saved-items-columns">
+            <section>
+              <h3>Filters</h3>
+              <div id="settings-saved-filters" class="settings-saved-list"></div>
+            </section>
+            <section>
+              <h3>Views</h3>
+              <div id="settings-saved-views" class="settings-saved-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="settings-actions" aria-label="Data actions">
+          <header><strong>Data actions</strong><small>These changes affect locally saved map data.</small></header>
+          <button id="delete-populations" class="danger-setting" type="button"><span>Delete all animal population data</span><small>Remove every recorded animal from every group.</small></button>
+          <button id="reset-need-zones" type="button"><span>Reset need zones</span><small>Mark every need zone as Rarely.</small></button>
+          <button id="delete-need-zones" class="danger-setting" type="button"><span>Delete all need zones</span><small>Remove need zones associated with every animal group.</small></button>
+          <button id="load-default-need-zones" type="button"><span>Load default need zones</span><small>Restore the saved copy of the map's shipped need zones.</small></button>
+          <button id="reset-completed" type="button"><span>Reset completed</span><small>Mark all completed infrastructure items as not completed.</small></button>
+        </section>
+
+        <p id="settings-status" class="settings-status" aria-live="polite"></p>
+        <div class="dialog-actions"><button type="button" class="primary close-settings">Done</button></div>
+      </section>
+    </dialog>
+
+    <script src="app.js?v=20260929-4" defer></script>
   </body>
 </html>
