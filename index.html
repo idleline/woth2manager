@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#111714" />
     <title>New Laurentia — Offline Map</title>
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=20260929-4" />
+    <link rel="stylesheet" href="styles.css?v=20261001-1" />
   </head>
   <body>
     <div id="app" class="app is-loading">
@@ -153,6 +153,7 @@
         <div id="map" class="map" role="application" aria-label="Interactive map of New Laurentia" tabindex="0">
           <div id="map-stage" class="map-stage">
             <div id="tiles" class="tiles-layer" aria-hidden="true"></div>
+            <svg id="travel-arrows" class="travel-arrows-layer" aria-hidden="true"></svg>
             <div id="markers" class="markers-layer"></div>
           </div>
           <div id="empty-state" class="empty-state" hidden>No locations match these filters.</div>
@@ -308,6 +309,16 @@
           <button type="button" class="icon-button close-settings" aria-label="Close settings">×</button>
         </div>
 
+        <section class="data-backup-settings" aria-label="Export and import saved data">
+          <header><strong>Saved data</strong><small>Move all of your map data and preferences with one JSON file.</small></header>
+          <div class="data-backup-actions">
+            <button id="export-data" type="button"><span>Export</span><small>Download all saved data.</small></button>
+            <button id="import-data" type="button"><span>Import</span><small>Replace current data from a backup.</small></button>
+          </div>
+          <input id="import-data-file" type="file" accept="application/json,.json" hidden />
+          <p>Importing permanently wipes all current saved data before loading the selected backup.</p>
+        </section>
+
         <div class="settings-fields">
           <label class="setting-row" for="zoom-step">
             <span><strong>Zoom level increments</strong><small>Amount used by buttons, wheel, double-click, and keyboard.</small></span>
@@ -322,6 +333,12 @@
           <label class="setting-row toggle-setting" for="center-zoom-on-selected">
             <span><strong>Center zoom on selected</strong><small>Focus zooming on the selected map icon.</small></span>
             <input id="center-zoom-on-selected" type="checkbox" />
+            <span class="switch" aria-hidden="true"></span>
+          </label>
+
+          <label class="setting-row toggle-setting" for="show-animal-travel">
+            <span><strong>Show animal travel</strong><small>Draw directional routes between Often need zones for the selected animal group.</small></span>
+            <input id="show-animal-travel" type="checkbox" />
             <span class="switch" aria-hidden="true"></span>
           </label>
 
@@ -362,6 +379,6 @@
       </section>
     </dialog>
 
-    <script src="app.js?v=20260929-4" defer></script>
+    <script src="app.js?v=20261001-1" defer></script>
   </body>
 </html>

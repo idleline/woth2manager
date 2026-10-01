@@ -111,13 +111,16 @@ button { color: inherit; }
 .map.is-placing-animal { cursor: crosshair; }
 .map.is-relocating { cursor: grabbing; }
 .map.is-editing-animals::after { content: "Map editing"; position: absolute; inset: 8px; z-index: 7; border: 2px solid rgba(231,182,72,.72); border-radius: 9px; pointer-events: none; color: transparent; box-shadow: inset 0 0 30px rgba(231,182,72,.08); }
-.map-stage, .tiles-layer, .tile-set, .markers-layer { position: absolute; inset: 0; }
+.map-stage, .tiles-layer, .tile-set, .travel-arrows-layer, .markers-layer { position: absolute; inset: 0; }
 .map-stage { transform: translate3d(0,0,0); transform-style: preserve-3d; will-change: transform; }
 .map-stage.is-zoom-animating { transition: transform 360ms cubic-bezier(.4,0,.2,1); }
 .map-stage.is-zoom-animating .marker { transform: translate(-50%, -50%) scale(var(--zoom-marker-scale, 1)); transition: filter .12s ease, opacity .12s ease, transform 360ms cubic-bezier(.4,0,.2,1); }
 .tile-set { opacity: 0; transition: opacity 180ms ease-in-out; }
 .tile-set.is-active { opacity: 1; }
 .tile { position: absolute; display: block; max-width: none; image-rendering: auto; user-select: none; pointer-events: none; }
+.travel-arrows-layer { z-index: 2; width: 100%; height: 100%; overflow: visible; pointer-events: none; filter: drop-shadow(0 2px 3px rgba(0,0,0,.48)); }
+.travel-arrow { fill: none; stroke-width: 3; stroke-dasharray: 9 7; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.markers-layer { z-index: 3; }
 .marker { position: absolute; z-index: 3; display: grid; place-items: center; width: 31px; height: 31px; padding: 0; transform: translate(-50%, -50%); background: rgba(24,30,26,.9); border: 2px solid var(--marker-color, #eee); border-radius: 50% 50% 50% 8px; box-shadow: 0 3px 8px rgba(0,0,0,.42); cursor: pointer; transition: filter .12s ease, opacity .12s ease, transform .12s ease; }
 .marker::after { content: ""; position: absolute; inset: 2px; border: 1px solid rgba(255,255,255,.13); border-radius: inherit; pointer-events: none; }
 .marker:hover, .marker:focus-visible { z-index: 10; filter: brightness(1.22); transform: translate(-50%, -50%) scale(1.15); outline: none; }
@@ -320,8 +323,8 @@ button.population-stars:hover, button.population-stars:focus-visible { backgroun
 .setting-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 16px; min-height: 68px; padding: 12px 14px; color: var(--ink); background: rgba(255,255,255,.025); border-top: 1px solid var(--line); cursor: default; letter-spacing: 0; text-transform: none; }
 .setting-row:first-child { border-top: 0; }
 .setting-row > span:first-child { display: grid; gap: 4px; }
-.setting-row strong, .settings-actions button span { color: #dce2dc; font-size: 11px; letter-spacing: 0; text-transform: none; }
-.setting-row small, .settings-actions small { color: #7f8981; font-size: 9px; font-weight: 500; letter-spacing: 0; line-height: 1.4; text-transform: none; }
+.setting-row strong, .settings-actions button span, .data-backup-actions button span { color: #dce2dc; font-size: 11px; letter-spacing: 0; text-transform: none; }
+.setting-row small, .settings-actions small, .data-backup-actions small { color: #7f8981; font-size: 9px; font-weight: 500; letter-spacing: 0; line-height: 1.4; text-transform: none; }
 .setting-row select { min-width: 82px; height: 34px; padding: 0 9px; color: #dce2dc; background: #0e1310; border: 1px solid var(--line); border-radius: 5px; }
 .toggle-setting { position: relative; cursor: pointer; }
 .toggle-setting input { position: absolute; opacity: 0; pointer-events: none; }
@@ -334,6 +337,15 @@ button.population-stars:hover, button.population-stars:focus-visible { backgroun
 .range-control { display: grid; grid-template-columns: 1fr 42px; align-items: center; gap: 8px; }
 .range-control input { width: 100%; accent-color: var(--accent); }
 .range-control output { color: var(--accent); font-size: 10px; font-weight: 800; text-align: right; }
+.data-backup-settings { display: grid; gap: 9px; }
+.data-backup-settings > header { display: grid; gap: 3px; }
+.data-backup-settings > header strong { color: #cdd4ce; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.data-backup-settings > header small { color: #7f8981; font-size: 9px; }
+.data-backup-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.data-backup-actions button { display: grid; gap: 3px; min-height: 52px; padding: 9px 11px; color: #dce2dc; background: rgba(231,182,72,.06); border: 1px solid rgba(231,182,72,.28); border-radius: 5px; cursor: pointer; text-align: left; }
+.data-backup-actions button:hover { background: rgba(231,182,72,.12); border-color: rgba(231,182,72,.52); }
+.data-backup-actions button span { color: var(--accent); }
+.data-backup-settings > p { margin: 0; color: #a87468; font-size: 8px; line-height: 1.4; }
 .saved-items-settings { display: grid; gap: 9px; }
 .saved-items-settings > header { display: grid; gap: 3px; }
 .saved-items-settings > header strong { color: #cdd4ce; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
@@ -355,6 +367,7 @@ button.population-stars:hover, button.population-stars:focus-visible { backgroun
 .settings-actions button:hover { background: rgba(255,255,255,.055); border-color: rgba(255,255,255,.16); }
 .settings-actions button.danger-setting span { color: #e38b76; }
 .settings-status { min-height: 15px; margin: -7px 0; color: var(--accent); font-size: 9px; text-align: center; }
+.settings-status.is-error { color: #e38b76; }
 
 @media (max-width: 760px) {
   :root { --sidebar: min(86vw, 320px); }

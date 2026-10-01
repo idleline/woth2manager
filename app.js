@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS = {
   zoomStep: 0.25,
   centerZoomOnSelected: true,
   iconFadeOpacity: 0.45,
+  showAnimalTravel: true,
 };
 const STORAGE = {
   completed: "new-laurentia.completed.v1",
@@ -23,6 +24,8 @@ const STORAGE = {
   settings: "new-laurentia.settings.v1",
   defaultNeedZones: "new-laurentia.default-need-zones.v1",
 };
+const DATA_BACKUP_FORMAT = "new-laurentia-user-data";
+const DATA_BACKUP_VERSION = 1;
 
 const MAX_AGE_ALIASES = {
   "American Wolverine": "Wolverine",
@@ -144,7 +147,7 @@ async function init() {
 
 function cacheElements() {
   for (const id of [
-    "map", "map-stage", "tiles", "markers", "categories", "search", "show-all",
+    "map", "map-stage", "tiles", "travel-arrows", "markers", "categories", "search", "show-all",
     "hide-all", "hide-completed", "show-need-zones", "progress-text", "progress-bar", "zoom-in",
     "zoom-out", "zoom-level", "zoom-lock", "reset-view", "add-pin", "pin-card", "empty-state",
     "coordinates", "map-hint", "loading", "custom-pin-dialog", "custom-pin-form",
@@ -156,9 +159,10 @@ function cacheElements() {
     "animal-edit-actions", "add-animal-group", "save-animal-groups", "animal-group-dialog",
     "animal-group-form", "animal-group-options", "animal-group-location", "need-zone-dialog",
     "need-zone-form", "need-zone-location", "need-zone-next",
-    "open-settings", "settings-dialog", "zoom-step", "center-zoom-on-selected",
+    "open-settings", "settings-dialog", "zoom-step", "center-zoom-on-selected", "show-animal-travel",
     "icon-fade-opacity", "icon-fade-value", "delete-populations", "reset-need-zones",
     "delete-need-zones", "load-default-need-zones", "reset-completed", "settings-status",
+    "export-data", "import-data", "import-data-file",
     "save-item-dialog", "save-item-form", "save-item-eyebrow", "save-item-title",
     "save-item-name", "save-item-help", "confirm-save-item", "load-item-dialog",
     "load-item-form", "load-item-eyebrow", "load-item-title", "load-item-legend",
@@ -199,6 +203,9 @@ function normalizeSettings(settings) {
     centerZoomOnSelected: settings?.centerZoomOnSelected === undefined
       ? DEFAULT_SETTINGS.centerZoomOnSelected
       : Boolean(settings.centerZoomOnSelected),
+    showAnimalTravel: settings?.showAnimalTravel === undefined
+      ? DEFAULT_SETTINGS.showAnimalTravel
+      : Boolean(settings.showAnimalTravel),
     iconFadeOpacity: Number.isFinite(opacity)
       ? clamp(opacity, 0.1, 0.9)
       : DEFAULT_SETTINGS.iconFadeOpacity,
@@ -537,7 +544,11 @@ function bindEvents() {
   }
   els.zoomStep.addEventListener("change", updateSettingsFromControls);
   els.centerZoomOnSelected.addEventListener("change", updateSettingsFromControls);
+  els.showAnimalTravel.addEventListener("change", updateSettingsFromControls);
   els.iconFadeOpacity.addEventListener("input", updateSettingsFromControls);
+  els.exportData.addEventListener("click", exportUserData);
+  els.importData.addEventListener("click", chooseDataImport);
+  els.importDataFile.addEventListener("change", importUserData);
   els.deletePopulations.addEventListener("click", deleteAllPopulationData);
   els.resetNeedZones.addEventListener("click", resetAllNeedZones);
   els.deleteNeedZones.addEventListener("click", deleteAllNeedZones);
@@ -561,13 +572,14 @@ function openSettings() {
   if (state.editingAnimalGroups) return;
   syncSettingsControls();
   renderSavedItemsSettings();
-  els.settingsStatus.textContent = "";
+  setSettingsStatus("");
   els.settingsDialog.showModal();
 }
 
 function syncSettingsControls() {
   els.zoomStep.value = String(state.settings.zoomStep);
   els.centerZoomOnSelected.checked = state.settings.centerZoomOnSelected;
+  els.showAnimalTravel.checked = state.settings.showAnimalTravel;
   els.iconFadeOpacity.value = String(state.settings.iconFadeOpacity);
   applyIconFadeOpacity();
 }
@@ -576,11 +588,13 @@ function updateSettingsFromControls() {
   state.settings = normalizeSettings({
     zoomStep: Number(els.zoomStep.value),
     centerZoomOnSelected: els.centerZoomOnSelected.checked,
+    showAnimalTravel: els.showAnimalTravel.checked,
     iconFadeOpacity: Number(els.iconFadeOpacity.value),
   });
   saveStorage(STORAGE.settings, state.settings);
   applyIconFadeOpacity();
-  els.settingsStatus.textContent = "Preferences saved";
+  renderTravelArrows();
+  setSettingsStatus("Preferences saved");
 }
 
 function applyIconFadeOpacity() {
@@ -590,6 +604,116 @@ function applyIconFadeOpacity() {
 
 function confirmSettingAction(message) {
   return window.confirm(message);
+}
+
+function exportUserData() {
+  try {
+    const data = {};
+    for (const [name, key] of Object.entries(STORAGE)) {
+      const value = localStorage.getItem(key);
+      if (value !== null) data[name] = JSON.parse(value);
+    }
+    const backup = {
+      format: DATA_BACKUP_FORMAT,
+      version: DATA_BACKUP_VERSION,
+      exportedAt: new Date().toISOString(),
+      data,
+    };
+    const blob = new Blob([`${JSON.stringify(backup, null, 2)}\n`], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `new-laurentia-data-${backup.exportedAt.slice(0, 10)}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setSettingsStatus("All saved data exported");
+  } catch (error) {
+    console.error(error);
+    setSettingsStatus("Could not export saved data", true);
+  }
+}
+
+function chooseDataImport() {
+  els.importDataFile.value = "";
+  els.importDataFile.click();
+}
+
+async function importUserData(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+
+  let importedValues;
+  try {
+    const backup = JSON.parse(await file.text());
+    importedValues = validateDataBackup(backup);
+  } catch (error) {
+    setSettingsStatus(`Could not import: ${error.message}`, true);
+    event.target.value = "";
+    return;
+  }
+
+  const confirmed = confirmSettingAction(
+    `Import “${file.name}”? All current saved data will be permanently deleted and replaced with this file.`,
+  );
+  if (!confirmed) {
+    event.target.value = "";
+    return;
+  }
+
+  let currentValues;
+  try {
+    currentValues = new Map(Object.values(STORAGE).map((key) => [key, localStorage.getItem(key)]));
+    replaceStoredUserData(importedValues);
+  } catch (error) {
+    console.error(error);
+    if (currentValues) {
+      try {
+        replaceStoredUserData(currentValues);
+        setSettingsStatus("Import failed; current data was restored", true);
+      } catch (restoreError) {
+        console.error(restoreError);
+        setSettingsStatus("Import failed and current data could not be restored", true);
+      }
+    } else {
+      setSettingsStatus("Import failed because browser storage is unavailable", true);
+    }
+    event.target.value = "";
+    return;
+  }
+
+  els.settingsDialog.close();
+  window.location.reload();
+}
+
+function validateDataBackup(backup) {
+  if (!backup || typeof backup !== "object" || Array.isArray(backup)) {
+    throw new Error("the selected file is not a data backup");
+  }
+  if (backup.format !== DATA_BACKUP_FORMAT || backup.version !== DATA_BACKUP_VERSION) {
+    throw new Error("the backup format or version is not supported");
+  }
+  if (!backup.data || typeof backup.data !== "object" || Array.isArray(backup.data)) {
+    throw new Error("the backup does not contain saved data");
+  }
+
+  const importedValues = new Map();
+  for (const [name, value] of Object.entries(backup.data)) {
+    const key = STORAGE[name];
+    if (!key) throw new Error(`the backup contains an unknown data type: ${name}`);
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) throw new Error(`the backup contains invalid ${name} data`);
+    importedValues.set(key, serialized);
+  }
+  return importedValues;
+}
+
+function replaceStoredUserData(values) {
+  for (const key of Object.values(STORAGE)) localStorage.removeItem(key);
+  for (const [key, value] of values) {
+    if (value !== null) localStorage.setItem(key, value);
+  }
 }
 
 function deleteAllPopulationData() {
@@ -673,8 +797,9 @@ function resetAllCompleted() {
   setSettingsStatus("All completed items reset");
 }
 
-function setSettingsStatus(message) {
+function setSettingsStatus(message, isError = false) {
   els.settingsStatus.textContent = message;
+  els.settingsStatus.classList.toggle("is-error", isError);
 }
 
 function cloneAnimalGroupEdits(edits) {
@@ -860,6 +985,10 @@ function removeNeedZone(zone) {
 
 function removeAnimalGroup(pin) {
   if (!state.editingAnimalGroups || !isAnimalPin(pin) || pin.parentPin) return;
+  const title = groupById.get(pin.group)?.title || pin.title || "this animal group";
+  if (!confirmSettingAction(
+    `Remove “${title}” and all of its need zones? This action cannot be undone after you save changes.`,
+  )) return;
   const edits = state.animalGroupDraft;
   state.animalEditRemovedPinIds.add(String(pin.id));
   for (const candidate of [...state.data.pins, ...edits.needZones]) {
@@ -1376,8 +1505,99 @@ function renderMarkers({ refreshCard = true } = {}) {
   }
 
   els.markers.replaceChildren(fragment);
+  renderTravelArrows();
   els.emptyState.hidden = candidates.length > 0 || state.customPins.length > 0;
   if (state.selected && refreshCard) refreshCardIfNeeded();
+}
+
+function renderTravelArrows() {
+  els.travelArrows.replaceChildren();
+  if (!state.settings.showAnimalTravel) return;
+  const animal = getSelectedAnimalPin();
+  if (!animal) return;
+
+  const zones = needZonesByAnimal.get(animal.id) || [];
+  const availableTypes = new Set(zones.map(getNeedZoneType));
+  if (!["Resting", "Eating", "Drinking"].every((type) => availableTypes.has(type))) return;
+
+  const oftenZones = zones.filter((zone) => state.needZoneVisits[zone.id] === "often");
+  if (oftenZones.length < 2) return;
+
+  const zonesByType = Object.fromEntries(["Resting", "Eating", "Drinking"].map((type) => [
+    type,
+    oftenZones.filter((zone) => getNeedZoneType(zone) === type),
+  ]));
+  const travelOrder = [
+    ["Resting", "Eating"],
+    ["Eating", "Drinking"],
+    ["Drinking", "Resting"],
+  ];
+  const rect = els.map.getBoundingClientRect();
+  const centerPx = lonLatToWorld(state.center[0], state.center[1], state.zoom);
+  const definitions = [];
+  const paths = [];
+  let routeIndex = 0;
+
+  for (const type of ["Resting", "Eating", "Drinking"]) {
+    const color = NEED_ZONE_COLORS[type];
+    definitions.push(`
+      <marker id="travel-arrowhead-${type.toLowerCase()}" viewBox="0 0 10 10" refX="9" refY="5"
+        markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="${color}"></path>
+      </marker>`);
+  }
+
+  for (const [sourceType, destinationType] of travelOrder) {
+    for (const source of zonesByType[sourceType]) {
+      for (const destination of zonesByType[destinationType]) {
+        const sourcePoint = mapPinToScreen(source, rect, centerPx);
+        const destinationPoint = mapPinToScreen(destination, rect, centerPx);
+        const line = shortenTravelLine(sourcePoint, destinationPoint);
+        if (!line) continue;
+        const gradientId = `travel-gradient-${routeIndex++}`;
+        definitions.push(`
+          <linearGradient id="${gradientId}" gradientUnits="userSpaceOnUse"
+            x1="${line.x1}" y1="${line.y1}" x2="${line.x2}" y2="${line.y2}">
+            <stop offset="0%" stop-color="${NEED_ZONE_COLORS[sourceType]}"></stop>
+            <stop offset="100%" stop-color="${NEED_ZONE_COLORS[destinationType]}"></stop>
+          </linearGradient>`);
+        paths.push(`
+          <path class="travel-arrow" d="M ${line.x1} ${line.y1} L ${line.x2} ${line.y2}"
+            stroke="url(#${gradientId})" marker-end="url(#travel-arrowhead-${destinationType.toLowerCase()})"></path>`);
+      }
+    }
+  }
+
+  if (!paths.length) return;
+  els.travelArrows.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
+  els.travelArrows.innerHTML = `<defs>${definitions.join("")}</defs>${paths.join("")}`;
+}
+
+function mapPinToScreen(pin, rect, centerPx) {
+  const location = getPinLocation(pin);
+  const point = lonLatToWorld(location[0], location[1], state.zoom);
+  return {
+    x: point.x - centerPx.x + rect.width / 2,
+    y: point.y - centerPx.y + rect.height / 2,
+  };
+}
+
+function shortenTravelLine(source, destination) {
+  const dx = destination.x - source.x;
+  const dy = destination.y - source.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance <= 18) return null;
+  const paddingScale = Math.min(1, (distance - 12) / 51);
+  const sourcePadding = 22 * paddingScale;
+  const destinationPadding = 29 * paddingScale;
+  const unitX = dx / distance;
+  const unitY = dy / distance;
+  return {
+    x1: source.x + unitX * sourcePadding,
+    y1: source.y + unitY * sourcePadding,
+    x2: destination.x - unitX * destinationPadding,
+    y2: destination.y - unitY * destinationPadding,
+  };
 }
 
 function createMarker(pin, x, y) {
@@ -1780,6 +2000,16 @@ function incrementPopulationAge(pin, group) {
 }
 
 function ageAllAnimalPopulations() {
+  const hasRecordedAnimals = Object.values(state.populations)
+    .some((population) => Array.isArray(population) && population.length);
+  if (!hasRecordedAnimals) {
+    showMapActionStatus("No recorded animals to age.");
+    return;
+  }
+  if (!confirmSettingAction(
+    "Age all animal groups by one? Every recorded animal will age by one, and any animals currently at maximum age will be removed. This action cannot be undone.",
+  )) return;
+
   let agedCount = 0;
   let removedCount = 0;
 
@@ -1794,11 +2024,6 @@ function ageAllAnimalPopulations() {
     state.populations[pinId] = result.population;
     agedCount += result.agedCount;
     removedCount += result.removedCount;
-  }
-
-  if (!agedCount && !removedCount) {
-    showMapActionStatus("No recorded animals to age.");
-    return;
   }
 
   saveStorage(STORAGE.populations, state.populations);

@@ -21,9 +21,11 @@ map editing with removable icons and cascading animal-group removal, custom pers
 pins, named saved filters and map views, one-click aging for all recorded animal
 populations, drag/keyboard navigation,
 optional zoom locking, selected-animal or cursor-centered zooming, and zoom levels
-3–7 in smooth 0.25 increments.
+3–7 in smooth 0.25 increments. Selected animal groups can also show directional
+travel arrows between Often need zones, with an option to disable the overlay.
 Personal map data, named filters/views, and the last map position are stored in the
-browser's local storage.
+browser's local storage. The first section in Settings can export all saved user
+data to one JSON backup or import a backup, replacing all current saved data.
 
 ## Offline assets
 
